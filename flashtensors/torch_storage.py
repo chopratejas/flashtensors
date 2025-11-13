@@ -28,32 +28,50 @@ def _get_uuid():
 
 
 def save_dict(state_dict: Dict[str, torch.Tensor], model_path: Union[str, os.PathLike]):
-    tensor_names = list(state_dict.keys())
-    tensor_data_index = {}
-    for name, param in state_dict.items():
-        param_storage = param.untyped_storage()
-        data_ptr = param_storage.data_ptr()
-        size = param_storage.size()
-        tensor_data_index[name] = (data_ptr, size)
+    try:
+        logger.info(f"save_dict START: model_path={model_path}")
+        tensor_names = list(state_dict.keys())
+        tensor_data_index = {}
+        total_data_size = 0
+        zero_ptr_count = 0
+        for name, param in state_dict.items():
+            param_storage = param.untyped_storage()
+            data_ptr = param_storage.data_ptr()
+            size = param_storage.size()
+            if data_ptr == 0:
+                zero_ptr_count += 1
+                logger.error(f"Tensor {name} has null data_ptr! size={size}, device={param.device}, dtype={param.dtype}")
+            tensor_data_index[name] = (data_ptr, size)
+            total_data_size += size
 
-    if not os.path.exists(model_path):
-        os.makedirs(model_path, exist_ok=True)
+        logger.info(f"save_dict: {len(state_dict)} tensors, total size: {total_data_size / 1024 / 1024:.2f} MB, zero_ptr_count={zero_ptr_count}")
+        if zero_ptr_count > 0:
+            logger.error(f"WARNING: {zero_ptr_count} tensors have null data pointers!")
 
-    tensor_offsets = save_tensors(tensor_names, tensor_data_index, model_path)
+        if not os.path.exists(model_path):
+            os.makedirs(model_path, exist_ok=True)
 
-    tensor_index = {}
-    for name, param in state_dict.items():
-        # name: offset, size
-        tensor_index[name] = (
-            tensor_offsets[name],
-            tensor_data_index[name][1],
-            tuple(param.shape),
-            tuple(param.stride()),
-            str(param.dtype),
-        )
+        logger.info(f"save_dict: calling save_tensors with {len(tensor_names)} tensors")
+        tensor_offsets = save_tensors(tensor_names, tensor_data_index, model_path)
+        logger.info(f"save_dict: save_tensors returned {len(tensor_offsets)} offsets")
 
-    with open(os.path.join(model_path, "tensor_index.json"), "w") as f:
-        json.dump(tensor_index, f)
+        tensor_index = {}
+        for name, param in state_dict.items():
+            # name: offset, size
+            tensor_index[name] = (
+                tensor_offsets[name],
+                tensor_data_index[name][1],
+                tuple(param.shape),
+                tuple(param.stride()),
+                str(param.dtype),
+            )
+
+        with open(os.path.join(model_path, "tensor_index.json"), "w") as f:
+            json.dump(tensor_index, f)
+        logger.info(f"save_dict END: successfully saved to {model_path}")
+    except Exception as e:
+        logger.error(f"save_dict EXCEPTION: {e}", exc_info=True)
+        raise
 
 
 def load_dict(

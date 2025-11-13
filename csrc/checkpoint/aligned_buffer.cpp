@@ -25,7 +25,7 @@
 #include <iostream>
 
 AlignedBuffer::AlignedBuffer(const std::string& filename)
-    : fd_(-1), buf_size_(kBufferSize), buf_pos_(0), file_offset_(0) {
+    : fd_(-1), buf_size_(kBufferSize), buf_pos_(0), file_offset_(0), filename_(filename) {
   fd_ = open(filename.c_str(), O_WRONLY | O_CREAT | O_DIRECT, 0644);
   if (fd_ < 0) {
     std::cerr << "Failed to open file " << filename << std::endl;
@@ -36,7 +36,25 @@ AlignedBuffer::AlignedBuffer(const std::string& filename)
 AlignedBuffer::~AlignedBuffer() {
   // if the buffer is not written to file, write it to file
   if (buffer_ && buf_pos_) {
-    pwrite(fd_, buffer_, buf_pos_, file_offset_);
+    // Pad the buffer to alignment boundary for O_DIRECT
+    size_t aligned_size = (buf_pos_ + kAlignment - 1) / kAlignment * kAlignment;
+    // Zero out the padding
+    if (aligned_size > buf_pos_) {
+      memset((char*)buffer_ + buf_pos_, 0, aligned_size - buf_pos_);
+    }
+    // Write the aligned buffer with O_DIRECT
+    ssize_t ret = pwrite(fd_, buffer_, aligned_size, file_offset_);
+    if (ret < 0) {
+      std::cerr << "Failed to write final buffer to file: " << filename_
+                << " errno: " << errno << " (" << strerror(errno) << ")"
+                << " buf_pos_: " << buf_pos_ << " aligned_size: " << aligned_size
+                << " file_offset_: " << file_offset_ << std::endl;
+    } else if ((size_t)ret != aligned_size) {
+      std::cerr << "Partial write in destructor: wrote " << ret << " bytes, expected " << aligned_size << std::endl;
+    }
+    // NOTE: We do NOT truncate the file! The padding must remain for O_DIRECT reads.
+    // The tensor_index.json contains the actual tensor sizes, so readers will only
+    // read the correct amount of data, ignoring the padding.
   }
   if (buffer_) {
     free(buffer_);
