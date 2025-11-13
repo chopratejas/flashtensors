@@ -189,7 +189,8 @@ set(CHECKPOINT_STORE_CXX_SOURCES
 
 set(CHECKPOINT_STORE_LIBRARIES
   Threads::Threads
-  glog::glog)
+  glog::glog
+  uring)
 
 define_gpu_extension_target(
   _checkpoint_store
