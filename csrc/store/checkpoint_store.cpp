@@ -312,15 +312,23 @@ int CheckpointStore::ClearMem()
   std::unique_lock<std::mutex> lock_info(model_info_mutex_);
   for (auto &[model_path, model] : model_map_)
   {
-    LOG(INFO) << "Unloading model " << model_path;
+    LOG(INFO) << "Freeing memory for model " << model_path;
+
+    // Free host memory only - GPU replicas are managed by client via IPC
+    // NOTE: GPU replicas use CUDA IPC handles which are automatically cleaned up
+    // by PyTorch's torch.cuda.ipc_collect() on the client side. We don't need
+    // to explicitly free them here, and doing so can cause race conditions with
+    // async loading tasks.
     int ret = model->FreeHost();
     if (ret != 0)
     {
-      LOG(ERROR) << "Failed to free memory for model " << model_path;
+      LOG(ERROR) << "Failed to free host memory for model " << model_path;
     }
   }
-  model_map_.clear();
-  LOG(INFO) << "All models unloaded from memory\n";
+
+  // Keep models registered (metadata retained for future reloads)
+  // GPU replicas persist in Model objects and will be reused or garbage collected
+  LOG(INFO) << "Memory freed for " << model_map_.size() << " models (keeping registrations)\n";
   return 0;
 }
 
