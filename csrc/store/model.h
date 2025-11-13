@@ -64,6 +64,7 @@ public:
   int FreeHost();
   int TryFreeHost();
   uint64_t GetModelSize() const { return model_size_; }
+  const std::unordered_map<std::string, GpuReplicaPtr>& GetGpuReplicas() const { return gpu_replicas_; }
 
 private:
   std::mutex mutex_;

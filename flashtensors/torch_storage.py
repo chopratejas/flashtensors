@@ -95,12 +95,8 @@ def load_dict(
     replica_uuid, state_dict = load_dict_non_blocking(
         model_path, device_map, storage_path
     )
-
-    storage = StorageClient()
-    success = storage.confirm_model_loaded(model_path, replica_uuid)
-    if not success:
-        logger.error(f"❌ Failed to confirm model {model_path} loaded")
-        raise ValueError(f"Failed to confirm model {model_path} loaded")
+    # Note: confirm_model_loaded is now called inside load_dict_non_blocking
+    # before restore_tensors to prevent race condition
 
     logger.info(f"✅ load_dict completed successfully with {len(state_dict)} tensors")
     return state_dict
@@ -224,7 +220,14 @@ def load_dict_non_blocking(
         logger.error(f"❌ Failed to load model {model_path} into GPU")
         raise ValueError(f"Failed to load model {model_path} into GPU")
 
-    logger.debug("GPU loading successful, restoring tensors")
+    # CRITICAL: Wait for storage server to finish writing to GPU before reading
+    logger.debug("⏳ Confirming GPU loading complete before reading memory...")
+    success = storage.confirm_model_loaded(model_path, replica_uuid)
+    if not success:
+        logger.error(f"❌ Failed to confirm model {model_path} loaded")
+        raise ValueError(f"Failed to confirm model {model_path} loaded")
+
+    logger.debug("✅ GPU loading confirmed, now safe to restore tensors")
 
     # load model state_dict
     start = time.time()
@@ -240,7 +243,7 @@ def load_dict_non_blocking(
         logger.error("❌ tensor_device_offsets is None")
         raise ValueError("tensor_device_offsets cannot be None")
 
-    logger.debug(f"Restoring {len(tensor_meta_index)} tensors")
+    logger.debug(f"Restoring {len(tensor_meta_index)} tensors from confirmed GPU memory")
     state_dict = restore_tensors(
         tensor_meta_index, cuda_memory_ptrs, tensor_device_offsets
     )

@@ -1,0 +1,184 @@
+================================================================================
+  WARM SWAP BENCHMARK RESULTS - INCOMPLETE DUE TO STORAGE SERVER CRASH
+================================================================================
+
+STATUS: ❌ FlashTensors warm swap benchmark FAILED due to critical bug
+         ✅ Baseline benchmark completed successfully
+
+================================================================================
+  BASELINE RESULTS (vLLM + SafeTensors) ✅ COMPLETE
+================================================================================
+
+Model: Qwen/Qwen3-0.6B
+Test: Load → Unload → Load → Unload → Load → Unload (4 iterations)
+
+Iteration 1 (Cold Load):  21.757s (load) + 0.362s (inference) = 22.119s
+Iteration 2 (Warm Swap):  13.824s (load) + 0.379s (inference) = 14.203s
+Iteration 3 (Warm Swap):  13.672s (load) + 0.371s (inference) = 14.043s
+Iteration 4 (Warm Swap):  13.545s (load) + 0.403s (inference) = 13.948s
+
+AVERAGE WARM SWAP TIME: 13.680s
+
+Key finding: Even with weights cached on disk (SafeTensors), warm swaps still
+take ~13-14 seconds because most time is spent in vLLM re-initialization, NOT
+disk I/O.
+
+================================================================================
+  FLASHTENSORS RESULTS ❌ INCOMPLETE
+================================================================================
+
+Model: Qwen/Qwen3-0.6B
+Test: Load → Unload → Load → Unload (planned 4 iterations)
+
+Iteration 1 (First Load + Registration): ✅ 14.897s (load) + 0.393s = 15.290s
+Iteration 2 (Warm Swap): ❌ STORAGE SERVER CRASHED
+Iteration 3 (Warm Swap): ❌ COULD NOT RUN (server dead)
+Iteration 4 (Warm Swap): ❌ COULD NOT RUN (server dead)
+
+CRASH DETAILS:
+--------------
+During iteration 2, after successful load_into_gpu() RPC, the storage server
+crashes when confirm_model_loaded() is called:
+
+  Error: StatusCode.UNAVAILABLE
+  Details: "recvmsg:Connection reset by peer"
+
+The C++ storage server process dies completely, making it impossible to
+complete the warm swap benchmark.
+
+================================================================================
+  COMPARISON: What We Learned
+================================================================================
+
+1. FLASHTENSORS FIRST LOAD IS FASTER THAN BASELINE COLD LOAD
+
+   Baseline cold load:     21.757s
+   FlashTensors first load: 14.897s
+
+   SPEEDUP: 1.46x faster (31% improvement) ✅
+
+   This is impressive! Even with registration overhead, FlashTensors loads
+   faster on the first try.
+
+2. WARM SWAPS ARE DOMINATED BY vLLM RE-INITIALIZATION, NOT DISK I/O
+
+   Baseline warm swap:     13.680s average
+   Baseline cold load:     21.757s
+
+   Time saved by cached weights: only ~8 seconds
+   Time still spent on vLLM init: ~13-14 seconds
+
+   This means: Even instant weight loading won't help much if we're doing
+   full vLLM shutdown/restart cycles!
+
+3. STORAGE SERVER HAS CRITICAL BUG IN WARM SWAP SCENARIO
+
+   The server crashes on the SECOND model load after cleanup_gpu().
+   This blocks testing the core value proposition of FlashTensors.
+
+================================================================================
+  THEORETICAL FLASHTENSORS WARM SWAP PERFORMANCE
+================================================================================
+
+Based on architecture, FlashTensors warm swaps SHOULD be:
+
+  Weight loading from storage:     ~0.5-1.0s  (no disk I/O)
+  vLLM engine re-initialization:   ~12-13s    (same as baseline)
+  --------------------------------------------------------------------
+  Expected total:                  ~13-14s    (similar to baseline)
+
+CONCLUSION: With current architecture (full vLLM restart between swaps),
+FlashTensors warm swaps would be SIMILAR to baseline (~13-14s), not faster.
+
+The 31% speedup we see on first load is good, but warm swaps won't improve
+much unless we change the architecture to KEEP vLLM ENGINE ALIVE and hot-swap
+weights in place.
+
+================================================================================
+  ACTUAL vs EXPECTED PERFORMANCE
+================================================================================
+
+Documentation claims: "3-10x faster warm swaps"
+
+Reality with current architecture:
+- Cannot test due to storage server crash
+- Even if working, theoretical analysis suggests ~1x speedup (same as baseline)
+- Most time is vLLM re-initialization, not weight loading
+
+To achieve 3-10x speedup, would need:
+✅ Keep vLLM engine alive between swaps
+✅ Hot-swap weights in-place without full teardown
+✅ Reuse KV cache allocations and CUDA graphs
+✅ Minimal engine reconfiguration instead of full restart
+
+================================================================================
+  CRITICAL BUG TO FIX
+================================================================================
+
+FILE: Storage server C++ implementation
+ISSUE: Server crashes during confirm_model_loaded() on second load cycle
+
+Error sequence:
+1. First load:  load_into_gpu() → confirm_model_loaded() ✅ SUCCESS
+2. Cleanup:     cleanup_gpu() ✅ SUCCESS
+3. Second load: load_into_gpu() ✅ SUCCESS
+4. Confirm:     confirm_model_loaded() ❌ CRASH (Connection reset by peer)
+
+Possible causes:
+- Memory corruption in cleanup/reload cycle
+- Use-after-free or double-free in confirm operation
+- Race condition in CUDA IPC handle management
+- Thread safety issue in state machine
+
+PRIORITY: CRITICAL - blocks all warm swap testing
+
+================================================================================
+  NEXT STEPS
+================================================================================
+
+1. FIX STORAGE SERVER CRASH (HIGHEST PRIORITY)
+   - Debug confirm_model_loaded() implementation
+   - Check CUDA IPC handle lifecycle
+   - Review memory cleanup in ClearGPU()
+   - Add crash logging/debugging
+
+2. RE-RUN WARM SWAP BENCHMARK
+   - Complete FlashTensors iterations 2-4
+   - Get actual warm swap performance data
+   - Compare with baseline
+
+3. CONSIDER ARCHITECTURE IMPROVEMENTS
+   - Investigate keeping vLLM engine alive
+   - Implement in-place weight hot-swapping
+   - Measure true speedup potential
+
+================================================================================
+  SUMMARY
+================================================================================
+
+✅ Baseline benchmark: COMPLETE
+   - Warm swap time: 13.680s average
+   - Mostly vLLM re-init, not disk I/O
+
+✅ FlashTensors first load: FASTER than baseline
+   - 14.897s vs 21.757s (1.46x speedup)
+   - 31% improvement even with registration overhead
+
+❌ FlashTensors warm swap: BLOCKED by storage server crash
+   - Cannot complete iterations 2-4
+   - Critical bug must be fixed before testing
+
+📊 Expected warm swap performance: ~13-14s (similar to baseline)
+   - Current architecture: full vLLM restart between swaps
+   - To get dramatic speedup: need to keep engine alive
+
+🎯 Key insight: Weight loading is NOT the bottleneck!
+   - vLLM re-initialization takes 12-13 seconds
+   - Disk I/O savings only help by ~8 seconds
+   - Need architectural changes for 3-10x claims
+
+================================================================================
+
+Bottom line: FlashTensors is faster on first load (✅), but we can't test warm
+swaps due to a critical bug (❌). Even if fixed, current architecture won't
+achieve 3-10x speedup without keeping vLLM engine alive between swaps.

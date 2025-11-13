@@ -241,6 +241,8 @@ def fully_parallel_load(
 
         # Wait for tensor loading to complete
         replica_uuid, state_dict = future.result()
+        # Note: confirm_model_loaded is now called inside load_dict_non_blocking
+        # before restore_tensors to prevent race condition
 
     # Set model parameters with loaded tensors
     _set_model_tensors(
@@ -250,10 +252,6 @@ def fully_parallel_load(
         quantization_config=quantization_config,
         torch_dtype=torch_dtype,
     )
-
-    # Confirm model loading with storage client
-    client = StorageClient()
-    client.confirm_model_loaded(model_path, replica_uuid)
     
     model.eval()
     logger.info(f"✅ Model {model_path} loaded successfully with fully parallel loading")
@@ -366,6 +364,13 @@ def best_effort_load(
     if not ret:
         raise ValueError(f"Failed to load model {model_path} into GPU")
 
+    # CRITICAL: Wait for storage server to finish writing to GPU before reading
+    logger.debug("⏳ Confirming GPU loading complete before reading memory...")
+    success = client.confirm_model_loaded(model_path, replica_uuid)
+    if not success:
+        raise ValueError(f"Failed to confirm model {model_path} loaded")
+    logger.debug("✅ GPU loading confirmed, now safe to restore tensors")
+
     # Restore tensors from CUDA memory
     start = time.time()
     state_dict = restore_tensors(
@@ -386,8 +391,8 @@ def best_effort_load(
     dispatch_model(
         model, device_map, skip_keys=model._skip_keys_device_placement
     )
+    # Note: confirm_model_loaded already called before restore_tensors to prevent race condition
 
-    client.confirm_model_loaded(model_path, replica_uuid)
     model.eval()
     model.hf_device_map = device_map
 
