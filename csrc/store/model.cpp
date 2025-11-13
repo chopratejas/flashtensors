@@ -39,6 +39,17 @@
 
 #include "error_handling.h"
 
+// OPTIMIZATION: Cache CUDA graphs to avoid recreating on every load
+namespace {
+struct GraphCacheEntry {
+  cudaGraphExec_t graph_exec;
+  size_t num_transfers;
+  size_t total_size;
+};
+std::unordered_map<std::string, GraphCacheEntry> cuda_graph_cache_;
+std::mutex graph_cache_mutex_;
+}
+
 int Model::Initialize(const std::filesystem::path storage_path) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (state_ != MemoryState::UNINITIALIZED) {
@@ -103,6 +114,10 @@ int Model::ToHost(int num_threads) {
       return -1;
     }
 
+    // OPTIMIZATION: Hint kernel for sequential reads and read-ahead
+    posix_fadvise(fd, 0, partition_sizes_[partition_id],
+                  POSIX_FADV_SEQUENTIAL | POSIX_FADV_WILLNEED);
+
     file_descriptors.push_back(fd);
   }
 
@@ -124,7 +139,9 @@ int Model::ToHost(int num_threads) {
 
   // OPTIMIZATION: io_uring async disk I/O for 2-3x faster reads
   struct io_uring ring;
-  int ring_size = std::min(num_chunks, (size_t)4096);  // Max 4096 entries
+  // OPTIMIZATION: Use larger ring for big models (>1000 chunks ≈ 2GB+)
+  int max_ring_size = (num_chunks > 1000) ? 8192 : 4096;
+  int ring_size = std::min(num_chunks, (size_t)max_ring_size);
   int ret = io_uring_queue_init(ring_size, &ring, 0);
   if (ret < 0) {
     LOG(ERROR) << "io_uring_queue_init failed: " << strerror(-ret);
@@ -373,39 +390,70 @@ int Model::ToGpu(
                     << " transfers to device " << device_id
                     << " using CUDA graphs";
 
-          // OPTIMIZATION: CUDA graphs for reduced kernel launch overhead
+          // OPTIMIZATION: Cache CUDA graphs to avoid recreation overhead
+          std::string cache_key = model_path_ + ":" +
+                                  std::to_string(transfers.size()) + ":" +
+                                  std::to_string(loaded_size);
+
           cudaStream_t stream;
           CUDA_CHECK(cudaStreamCreate(&stream), "cudaStreamCreate Error");
 
-          // Begin capturing CUDA graph
-          cudaGraph_t graph;
           cudaGraphExec_t graph_exec;
+          bool cached = false;
 
-          LOG(INFO) << "Capturing CUDA graph for " << transfers.size() << " transfers...";
-          CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal),
-                    "cudaStreamBeginCapture Error");
-
-          // Issue all transfers on single stream (will be captured in graph)
-          for (size_t i = 0; i < transfers.size(); ++i) {
-            auto& op = transfers[i];
-
-            CUDA_CHECK(
-                cudaMemcpyAsync(
-                    (void *)((char *)device_ptr_list[op.handle_idx] + op.gpu_offset),
-                    (void *)(host_buffers[op.chunk_id] + op.chunk_offset),
-                    op.size,
-                    cudaMemcpyHostToDevice,
-                    stream),
-                "cudaMemcpyAsync Error");
+          // Check cache for existing graph
+          {
+            std::lock_guard<std::mutex> cache_lock(graph_cache_mutex_);
+            auto it = cuda_graph_cache_.find(cache_key);
+            if (it != cuda_graph_cache_.end() &&
+                it->second.num_transfers == transfers.size() &&
+                it->second.total_size == loaded_size) {
+              // FAST PATH: Reuse cached graph
+              graph_exec = it->second.graph_exec;
+              cached = true;
+              LOG(INFO) << "Reusing cached CUDA graph for " << transfers.size() << " transfers";
+            }
           }
 
-          // End graph capture
-          CUDA_CHECK(cudaStreamEndCapture(stream, &graph),
-                    "cudaStreamEndCapture Error");
+          if (!cached) {
+            // SLOW PATH: Capture new graph and cache it
+            LOG(INFO) << "Capturing new CUDA graph for " << transfers.size() << " transfers...";
 
-          // Instantiate the graph
-          CUDA_CHECK(cudaGraphInstantiate(&graph_exec, graph, NULL, NULL, 0),
-                    "cudaGraphInstantiate Error");
+            cudaGraph_t graph;
+            CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal),
+                      "cudaStreamBeginCapture Error");
+
+            // Issue all transfers on single stream (will be captured in graph)
+            for (size_t i = 0; i < transfers.size(); ++i) {
+              auto& op = transfers[i];
+
+              CUDA_CHECK(
+                  cudaMemcpyAsync(
+                      (void *)((char *)device_ptr_list[op.handle_idx] + op.gpu_offset),
+                      (void *)(host_buffers[op.chunk_id] + op.chunk_offset),
+                      op.size,
+                      cudaMemcpyHostToDevice,
+                      stream),
+                  "cudaMemcpyAsync Error");
+            }
+
+            // End graph capture
+            CUDA_CHECK(cudaStreamEndCapture(stream, &graph),
+                      "cudaStreamEndCapture Error");
+
+            // Instantiate the graph
+            CUDA_CHECK(cudaGraphInstantiate(&graph_exec, graph, NULL, NULL, 0),
+                      "cudaGraphInstantiate Error");
+
+            cudaGraphDestroy(graph);  // Can destroy graph after instantiation
+
+            // Add to cache
+            {
+              std::lock_guard<std::mutex> cache_lock(graph_cache_mutex_);
+              cuda_graph_cache_[cache_key] = {graph_exec, transfers.size(), loaded_size};
+              LOG(INFO) << "Cached CUDA graph with key: " << cache_key;
+            }
+          }
 
           LOG(INFO) << "Launching CUDA graph with " << transfers.size() << " transfers...";
 
@@ -417,11 +465,9 @@ int Model::ToGpu(
           CUDA_CHECK(cudaStreamSynchronize(stream),
                     "cudaStreamSynchronize Error");
 
-          LOG(INFO) << "CUDA graph completed successfully";
+          LOG(INFO) << "CUDA graph " << (cached ? "replay" : "execution") << " completed successfully";
 
-          // Clean up
-          cudaGraphExecDestroy(graph_exec);
-          cudaGraphDestroy(graph);
+          // Clean up stream (but NOT graph_exec if cached)
           cudaStreamDestroy(stream);
 
           LOG(INFO) << "Finished loading " << loaded_size
