@@ -2,7 +2,7 @@ pybind11
 setuptools
 wheel
 cmake
-vllm==0.10.2
+vllm>=0.10.2
 huggingface_hub
 huggingface_hub[hf-xet]
 transformers>=4.37.2

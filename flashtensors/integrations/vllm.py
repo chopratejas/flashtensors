@@ -12,11 +12,28 @@ from vllm.config import LoadConfig, ModelConfig, VllmConfig
 from vllm.model_executor.model_loader.utils import set_default_torch_dtype, initialize_model
 from vllm.model_executor.model_loader import BaseModelLoader, get_model_loader, LoadFormats
 from vllm.executor.executor_base import ExecutorBase
-from vllm.executor.mp_distributed_executor import MultiprocessingDistributedExecutor
+# MultiprocessingDistributedExecutor removed in vllm 0.11.0
+# from vllm.executor.mp_distributed_executor import MultiprocessingDistributedExecutor
 from vllm.executor.uniproc_executor import UniProcExecutor
-from vllm.worker.worker import Worker
+try:
+    from vllm.executor.ray_distributed_executor import RayDistributedExecutor as MultiprocessingDistributedExecutor
+except ImportError:
+    MultiprocessingDistributedExecutor = None
+try:
+    from vllm.worker.worker import Worker
+except ImportError:
+    # vllm 0.11.0+ changed module structure
+    from vllm.worker.worker_base import WorkerBase as Worker
 from vllm.model_executor import model_loader
-from vllm.worker.model_runner import GPUModelRunnerBase
+try:
+    from vllm.worker.model_runner import GPUModelRunnerBase
+except ImportError:
+    # vllm 0.11.0+ changed module structure
+    try:
+        from vllm.v1.worker.gpu_model_runner import GPUModelRunner as GPUModelRunnerBase
+    except ImportError:
+        # Fallback - may need different handling
+        GPUModelRunnerBase = None
 from vllm.engine.arg_utils import EngineArgs
 
 from flashtensors.torch_storage import save_dict, load_dict
@@ -255,6 +272,7 @@ def save_llm_state_executor_uniproc(
 
     
 def activate():
+    # vllm 0.10.2 uses V0 engine
     os.environ["VLLM_USE_V1"] = "0"
     ExtendedLoadFormats = Union[LoadFormats, Literal["flash"]]
 
@@ -264,8 +282,10 @@ def activate():
         
     model_loader.get_model_loader = patch_model_loader
     setattr(ExecutorBase, "save_llm_state", save_llm_state)
-    setattr(MultiprocessingDistributedExecutor, "save_llm_state", save_llm_state_impl)
+    if MultiprocessingDistributedExecutor is not None:
+        setattr(MultiprocessingDistributedExecutor, "save_llm_state", save_llm_state_impl)
     setattr(UniProcExecutor, "save_llm_state", save_llm_state_executor_uniproc)
     setattr(Worker, "save_llm_state", save_llm_state_worker)
-    setattr(GPUModelRunnerBase, "save_llm_state", save_llm_state_runner)
+    if GPUModelRunnerBase is not None:
+        setattr(GPUModelRunnerBase, "save_llm_state", save_llm_state_runner)
     return
