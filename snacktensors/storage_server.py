@@ -46,7 +46,7 @@ class StorageServer:
         """
 
         if not storage_path:
-            storage_path = os.getenv("STORAGE_PATH", "/tmp/flashtensors_models")
+            storage_path = os.getenv("STORAGE_PATH", "/tmp/snacktensors_models")
             
         if not storage_path:
             raise ValueError("storage_path cannot be empty")

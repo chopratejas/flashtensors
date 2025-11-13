@@ -14,7 +14,7 @@ from cli.commands.base import BaseCommand, InteractiveCommandMixin
 from cli.components import create_simple_command_box
 from cli.components.command_box import create_command_box
 from cli.styles.colors import ERROR, WARNING, SUCCESSFULL_UPDATE
-import flashtensors as flash
+import snacktensors as flash
 import torch
 from vllm import SamplingParams
 

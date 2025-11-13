@@ -24,9 +24,9 @@ used under the Apache License, Version 2.0. </b>
 
 
 
-## 🚀 Why flashtensors?  
+## 🚀 Why snacktensors?  
 
-Traditional model loaders slow down your workflow with painful startup times. flashtensors was built from the ground up to eliminate bottlenecks and maximize performance.  
+Traditional model loaders slow down your workflow with painful startup times. snacktensors was built from the ground up to eliminate bottlenecks and maximize performance.  
 
 - ⚡ **Up to 10x faster** than standard loaders  
 - ⏱ **Coldstarts < 2 seconds**
@@ -49,7 +49,7 @@ Use cases:
 ## 🔧 Installation  
 
 ```bash
-pip install git+https://github.com/leoheuler/flashtensors.git
+pip install git+https://github.com/leoheuler/snacktensors.git
 ```
 
 ---
@@ -59,23 +59,23 @@ pip install git+https://github.com/leoheuler/flashtensors.git
 ## Using the command line
 ``` bash
 # Start the daemon server
-flash start
+snack start
 ```
 
 ``` bash
 # Pull the model of your preference
-flash pull Qwen/Qwen3-0.6B
+snack pull Qwen/Qwen3-0.6B
 ```
 
 ``` bash
 # Run the model
-flash run Qwen/Qwen3-0.6B "Hello world"
+snack run Qwen/Qwen3-0.6B "Hello world"
 ```
 
 ## Using the SDK
 ### vllm
 ``` Python
-import flashtensors as ft
+import snacktensors as ft
 from vllm import SamplingParams
 import time
 
@@ -160,7 +160,7 @@ for model_key, model_info in models.items():
 ### Custom models
 
 ``` Python
-from flashtensors import flash
+from snacktensors import flash
 
 class SimpleModel(nn.Module):
     def __init__(self, size=(3,3)):
@@ -176,12 +176,12 @@ model = SimpleModel()
 state_dict = model.state_dict()
 
 # Save your state dict
-flash.save_dict(state_dict, "/your/model/folder")
+snack.save_dict(state_dict, "/your/model/folder")
 
 
 # Load your state dict blazing fast
 device_map =  {"":0}
-new_state_dict = flash.load_dict("/your/model/folder", device_map)
+new_state_dict = snack.load_dict("/your/model/folder", device_map)
 
 ```
 
@@ -190,9 +190,9 @@ new_state_dict = flash.load_dict("/your/model/folder", device_map)
 
 ## 📊 Benchmarks  
 
-flashtensors drastically reduces coldstart times compared to alternative loaders like safetensors.  
+snacktensors drastically reduces coldstart times compared to alternative loaders like safetensors.  
 
-| Model            | flashtensors ⚡ (s) | safetensors (mmap) (s) | Speedup |
+| Model            | snacktensors ⚡ (s) | safetensors (mmap) (s) | Speedup |
 |------------------|------------|----------|---------|
 | Qwen/Qwen3-0.6B  | **2.74**   | 11.68    | ~4.3×   |
 | Qwen/Qwen3-4B    | **2.26**   | 8.54     | ~3.8×   |
@@ -214,4 +214,4 @@ Coldstarts stay consistently under **5 seconds**, even for **32B parameter model
 - Ollama Integration
 
 Credits: 
-- Inspired and adapted from the great work of [ServerlessLLM](https://github.com/leoheuler/flashtensors/CREDITS.md)
+- Inspired and adapted from the great work of [ServerlessLLM](https://github.com/leoheuler/snacktensors/CREDITS.md)

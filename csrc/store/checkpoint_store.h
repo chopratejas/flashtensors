@@ -73,6 +73,27 @@ private:
     size_t total_memory_ = 0;
     size_t free_memory_ = 0;
     cudaStream_t stream_;
+
+    // Phase 2: CUDA Graph support
+    cudaGraph_t transfer_graph_ = nullptr;
+    cudaGraphExec_t transfer_graph_exec_ = nullptr;
+    bool graph_captured_ = false;
+  };
+
+  // Phase 2: CUDA Graph cache for model loading patterns
+  struct ModelLoadGraph {
+    std::string model_path_;
+    cudaGraph_t graph_;
+    cudaGraphExec_t graph_exec_;
+    std::chrono::time_point<std::chrono::system_clock> last_used_;
+    size_t memory_footprint_;
+
+    ModelLoadGraph() : graph_(nullptr), graph_exec_(nullptr), memory_footprint_(0) {}
+
+    ~ModelLoadGraph() {
+      if (graph_exec_) cudaGraphExecDestroy(graph_exec_);
+      if (graph_) cudaGraphDestroy(graph_);
+    }
   };
 
   const std::filesystem::path storage_path_;
@@ -90,6 +111,12 @@ private:
 
   std::queue<std::future<int>> async_tasks_;
 
+  // Phase 2: CUDA Graph cache management
+  std::unordered_map<std::string, std::shared_ptr<ModelLoadGraph>> graph_cache_;
+  std::mutex graph_cache_mutex_;
+  size_t max_graph_cache_size_ = 10;  // Max cached graphs (LRU eviction)
+  bool enable_cuda_graphs_ = true;     // Feature flag
+
   size_t GetNumChunkFromTensorSize(size_t tensor_size);
   ModelPtr GetModelPtr(const std::string &model_path);
   GpuReplicaPtr NewGpuReplica(const std::shared_ptr<Model> &model,
@@ -104,4 +131,10 @@ private:
   ModelPtr GetModelByName(const std::string &model_path);
   MemPtrListMap
   GetDevicePtrsFromMemHandles(const MemCopyHandleListMap &memory_handles);
+
+  // Phase 2: CUDA Graph management methods
+  std::shared_ptr<ModelLoadGraph> GetOrCreateGraph(const std::string &model_path);
+  void EvictOldestGraph();
+  void ClearGraphCache();
+  bool ShouldUseGraph(const std::string &model_path);
 };

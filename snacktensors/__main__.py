@@ -1,11 +1,11 @@
 """
-Entry point for running FlashEngine modules.
+Entry point for running SnackTensors modules.
 """
 import sys
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python -m flashtensors <module>")
+        print("Usage: python -m snacktensors <module>")
         print("Available modules:")
         print("  storage_server - Run the gRPC storage server")
         sys.exit(1)

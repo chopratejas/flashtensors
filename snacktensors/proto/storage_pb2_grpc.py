@@ -2,7 +2,7 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-from flashtensors.proto import (
+from snacktensors.proto import (
     storage_pb2 as storage__pb2,
 )
 

@@ -159,6 +159,20 @@ define_gpu_extension_target(
 # pthread
 find_package(Threads REQUIRED)
 
+# Phase 3.1: io_uring for async I/O
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(LIBURING liburing)
+  if(LIBURING_FOUND)
+    message(STATUS "liburing found: ${LIBURING_VERSION}")
+    add_compile_definitions(HAVE_LIBURING)
+  else()
+    message(STATUS "liburing not found, falling back to pread()")
+  endif()
+else()
+  message(STATUS "PkgConfig not found, skipping liburing detection")
+endif()
+
 #
 # Define source files used in CHECKPOINT_STORE
 #
@@ -176,6 +190,11 @@ set(CHECKPOINT_STORE_SOURCES
   "csrc/store/pinned_memory_pool.cpp"
 )
 
+# Add io_uring source if available
+if(LIBURING_FOUND)
+  list(APPEND CHECKPOINT_STORE_SOURCES "csrc/store/io_uring_reader.cpp")
+endif()
+
 #
 # Define pure CXX files used in CHECKPOINT_STORE (files without CUDA code)
 # Used for hipify tool to only convert CUDA code
@@ -187,9 +206,20 @@ set(CHECKPOINT_STORE_CXX_SOURCES
   "csrc/store/pinned_memory.cpp"
 )
 
+# Add io_uring to CXX sources if available
+if(LIBURING_FOUND)
+  list(APPEND CHECKPOINT_STORE_CXX_SOURCES "csrc/store/io_uring_reader.cpp")
+endif()
+
 set(CHECKPOINT_STORE_LIBRARIES
   Threads::Threads
   glog::glog)
+
+# Add liburing library if available
+if(LIBURING_FOUND)
+  list(APPEND CHECKPOINT_STORE_LIBRARIES ${LIBURING_LIBRARIES})
+  include_directories(${LIBURING_INCLUDE_DIRS})
+endif()
 
 define_gpu_extension_target(
   _checkpoint_store

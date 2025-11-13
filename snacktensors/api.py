@@ -34,7 +34,7 @@ def configure(
     registration_required: bool = False
 ) -> None:
     """
-    Configure FlashTensorsEngine library settings and start the gRPC server.
+    Configure SnackTensors library settings and start the gRPC server.
     
     Args:
         storage_path: Path where models will be stored (defaults to /workspace)
@@ -76,7 +76,7 @@ def configure(
     registry = get_registry()
     registry.set_storage_path(storage_path)
 
-    logger.info(f"FlashTensorsEngine configured: storage_path={storage_path}, mem_pool_size={mem_pool_size//1024**3}GB")
+    logger.info(f"SnackTensors configured: storage_path={storage_path}, mem_pool_size={mem_pool_size//1024**3}GB")
     logger.info(f"Available backends: {', '.join(list_backends())}")
 
     logger.info(f"Starting gRPC server on {server_host}:{server_port}...")
@@ -84,7 +84,7 @@ def configure(
         logger.info(f"✅ gRPC server is running on {get_server_address()}")
     else:
         logger.error("❌ Failed to start gRPC server")
-        raise RuntimeError("Failed to start FlashTensorsEngine gRPC server")
+        raise RuntimeError("Failed to start SnackTensors gRPC server")
 
 
 def connect(
@@ -92,7 +92,7 @@ def connect(
     server_port: int = DEFAULT_SERVER_PORT
 ) -> None:
     """
-    Connect to an existing FlashTensorsEngine gRPC server without starting a new one.
+    Connect to an existing SnackTensors gRPC server without starting a new one.
     
     This method is used by CLI clients to connect to a background server
     that was started with configure().
@@ -126,11 +126,11 @@ def connect(
         registry = get_registry()
         registry.set_storage_path(storage_path)
         
-        logger.info(f"✅ Successfully connected to FlashEngine server at {get_server_address()}")
+        logger.info(f"✅ Successfully connected to SnackTensors server at {get_server_address()}")
         
     except Exception as e:
-        logger.error(f"❌ Failed to connect to FlashEngine server at {server_host}:{server_port}")
-        raise ConnectionError(f"No FlashEngine server running at {server_host}:{server_port}. Please start the server first with 'flash start'") from e
+        logger.error(f"❌ Failed to connect to SnackTensors server at {server_host}:{server_port}")
+        raise ConnectionError(f"No SnackTensors server running at {server_host}:{server_port}. Please start the server first with 'flash start'") from e
 
 def register_model(
     model_id: str,
@@ -445,19 +445,19 @@ def _get_directory_size(path: str) -> int:
 
 def shutdown_server() -> None:
     """
-    Shutdown the FlashEngine gRPC server.
+    Shutdown the SnackTensors gRPC server.
     
     This stops the storage server and supervisord daemon.
-    After calling this, you can reconfigure FlashEngine settings
+    After calling this, you can reconfigure SnackTensors settings
     before starting the server again.
     """
     logger = init_logger(__name__)
     
     try:
         server_manager = get_server_manager()
-        logger.info("🛑 Shutting down FlashEngine server...")
+        logger.info("🛑 Shutting down SnackTensors server...")
         server_manager.stop_server()
-        logger.info("✅ FlashEngine server shutdown complete")
+        logger.info("✅ SnackTensors server shutdown complete")
     except Exception as e:
         logger.error(f"❌ Error during server shutdown: {e}")
         raise

@@ -1,16 +1,16 @@
 """
-Models command for listing available and downloaded models in the Flash Tensors CLI.
+Models command for listing available and downloaded models in the Snack Tensors CLI.
 """
 
 import click
 from rich.console import Console
 from rich.table import Table
-import flashtensors as flash
+import snacktensors as flash
 from cli.commands.base import BaseCommand, InteractiveCommandMixin
 
 
 class ModelsCommand(BaseCommand, InteractiveCommandMixin):
-    """Handle model listing in the Flash Tensors CLI."""
+    """Handle model listing in the Snack Tensors CLI."""
 
     def __init__(self):
         super().__init__()

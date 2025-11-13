@@ -3,7 +3,7 @@ import torch.nn as nn
 import os
 import json
 
-from flashtensors.torch_storage import save_dict, load_dict
+from snacktensors.torch_storage import save_dict, load_dict
 
 class SimpleModel(nn.Module):
     def __init__(self, size=(3,3)):

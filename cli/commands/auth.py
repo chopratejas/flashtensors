@@ -20,7 +20,7 @@ class AuthCommand(BaseCommand, InteractiveCommandMixin):
     def command(self):
         """Return the Click command instance."""
 
-        @click.command(help="Authenticate with Flash Tensors")
+        @click.command(help="Authenticate with Snack Tensors")
         def cmd():
             self.execute()
 
@@ -34,13 +34,13 @@ class AuthCommand(BaseCommand, InteractiveCommandMixin):
         self.console.print(
             "✅ Authentication successful!", style=f"italic {SUCCESSFULL_UPDATE}"
         )
-        self.console.print("You are now logged in to Flash Tensors.", style="dim")
+        self.console.print("You are now logged in to Snack Tensors.", style="dim")
 
     @classmethod
     def get_interactive_commands(cls):
         """Return interactive command help text."""
         return {
-            "auth": "Authenticate with Flash Tensors CLI",
+            "auth": "Authenticate with Snack Tensors CLI",
         }
 
     @classmethod

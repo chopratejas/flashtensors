@@ -1,5 +1,5 @@
 """
-Pull command for downloading models in the Flash Tensors CLI.
+Pull command for downloading models in the Snack Tensors CLI.
 """
 
 import os
@@ -17,7 +17,7 @@ from rich.progress import (
 )
 from rich.text import Text
 
-import flashtensors as flash
+import snacktensors as flash
 from cli.commands.base import BaseCommand, InteractiveCommandMixin
 from cli.components import create_simple_command_box
 from cli.styles.colors import WARNING
@@ -25,7 +25,7 @@ from cli.components.model_status import display_model_status
 
 
 class PullCommand(BaseCommand, InteractiveCommandMixin):
-    """Handle model downloads in the Flash Tensors CLI."""
+    """Handle model downloads in the Snack Tensors CLI."""
 
     def __init__(self):
         super().__init__()

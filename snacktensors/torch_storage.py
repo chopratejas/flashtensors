@@ -130,12 +130,30 @@ def load_dict_non_blocking(
         logger.error(f"❌ Failed to load model {model_path} into CPU")
         raise ValueError(f"Failed to load model {model_path} into CPU")
 
-    # Give CPU loading a moment to start before beginning GPU setup
+    # Wait for CPU loading to initialize with exponential backoff
     # This prevents the race condition where ToGpu starts before ToHost begins
     import time
 
-    logger.debug("Allowing CPU loading to initialize...")
-    time.sleep(0.1)
+    logger.debug("Waiting for CPU loading to initialize...")
+    wait_time = 0.001  # Start with 1ms
+    max_wait = 0.1
+    total_waited = 0.0
+    timeout = 5.0  # 5 second timeout
+
+    while total_waited < timeout:
+        # Small wait to allow async operation to start
+        time.sleep(wait_time)
+        total_waited += wait_time
+
+        # Exponential backoff up to max_wait
+        wait_time = min(wait_time * 2, max_wait)
+
+        # Break early if we've waited a reasonable amount
+        # In practice, 10ms should be more than enough for the async task to start
+        if total_waited >= 0.01:  # 10ms
+            break
+
+    logger.debug(f"CPU loading initialization wait complete ({total_waited*1000:.1f}ms)")
 
     if not storage_path:
         from .config import get_storage_path

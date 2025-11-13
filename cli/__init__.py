@@ -1,1 +1,1 @@
-# CLI module for flashtensors
+# CLI module for snacktensors

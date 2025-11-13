@@ -131,40 +131,70 @@ std::unordered_map<std::string, torch::Tensor> RestoreTensors(
     const std::unordered_map<int, void *> &memory_base_address,
     const std::unordered_map<int, std::unordered_map<std::string, uint64_t>>
         &tensor_device_offsets) {
-  std::unordered_map<std::string, torch::Tensor> state_dict;
-  std::unordered_set<void *> handled_memory;
-  for (const auto &[device, tensor_offset] : tensor_device_offsets) {
-    for (const auto &p : tensor_offset) {
-      std::string name = p.first;
-      if (memory_base_address.find(device) != memory_base_address.end()) {
-        void *base_address = memory_base_address.at(device);
-        uint64_t offset = reinterpret_cast<uint64_t>(base_address) + p.second;
 
-        torch::Device tensor_device(torch::kCUDA, device);
-        auto [sizes, strides, type_str] = meta_state_dict.at(name);
-        at::ScalarType dtype = stringToScalarType(type_str);
-        // std::cerr << name << " " << sizes << " " << strides << " " << dtype
-        // << std::endl;
-        if (p.second == 0 &&
-            handled_memory.find(base_address) == handled_memory.end()) {
-          torch::Tensor real_tensor = torch::from_blob(
-              reinterpret_cast<void *>(offset), c10::makeArrayRef(sizes),
-              c10::makeArrayRef(strides), [](void *ptr) { cudaFree(ptr); },
-              torch::TensorOptions().device(tensor_device).dtype(dtype));
-          state_dict[name] = real_tensor;
-          handled_memory.insert(base_address);
-          // std::cerr << "Tensor " << name << " is restored to device " <<
-          // device << std::endl;
-        } else {
-          torch::Tensor real_tensor = torch::from_blob(
-              reinterpret_cast<void *>(offset), sizes, strides,
-              [](void *ptr) {},
-              torch::TensorOptions().device(tensor_device).dtype(dtype));
-          state_dict[name] = real_tensor;
-        }
+  // Pre-calculate total number of tensors for better allocation
+  size_t total_tensors = 0;
+  for (const auto &[device, tensor_offset] : tensor_device_offsets) {
+    total_tensors += tensor_offset.size();
+  }
+
+  // Reserve capacity upfront to avoid rehashing
+  std::unordered_map<std::string, torch::Tensor> state_dict;
+  state_dict.reserve(total_tensors);
+
+  std::unordered_set<void *> handled_memory;
+  handled_memory.reserve(memory_base_address.size());
+
+  // Pre-create TensorOptions objects to avoid repeated construction
+  std::unordered_map<int, torch::TensorOptions> device_options_cache;
+  for (const auto &[device, _] : memory_base_address) {
+    device_options_cache[device] = torch::TensorOptions()
+        .device(torch::Device(torch::kCUDA, device));
+  }
+
+  for (const auto &[device, tensor_offset] : tensor_device_offsets) {
+    // Check device existence once per device
+    auto mem_it = memory_base_address.find(device);
+    if (mem_it == memory_base_address.end()) {
+      std::cerr << "Cannot find device " << device << std::endl;
+      exit(1);
+    }
+
+    void *base_address = mem_it->second;
+    const auto &base_options = device_options_cache.at(device);
+
+    for (const auto &[name, tensor_offset_value] : tensor_offset) {
+      uint64_t offset = reinterpret_cast<uint64_t>(base_address) + tensor_offset_value;
+
+      // Use const reference to avoid copy
+      const auto &meta = meta_state_dict.at(name);
+      const auto &sizes = std::get<0>(meta);
+      const auto &strides = std::get<1>(meta);
+      at::ScalarType dtype = stringToScalarType(std::get<2>(meta));
+
+      // Create tensor options with dtype
+      auto tensor_options = base_options.dtype(dtype);
+
+      if (tensor_offset_value == 0 &&
+          handled_memory.find(base_address) == handled_memory.end()) {
+        // First tensor owns the memory with cudaFree deleter
+        torch::Tensor real_tensor = torch::from_blob(
+            reinterpret_cast<void *>(offset),
+            c10::makeArrayRef(sizes),
+            c10::makeArrayRef(strides),
+            [](void *ptr) { cudaFree(ptr); },
+            tensor_options);
+        state_dict.emplace(name, std::move(real_tensor));
+        handled_memory.insert(base_address);
       } else {
-        std::cerr << "Cannot find device " << device << std::endl;
-        exit(1);
+        // Other tensors are views with no-op deleter
+        torch::Tensor real_tensor = torch::from_blob(
+            reinterpret_cast<void *>(offset),
+            sizes,
+            strides,
+            [](void *ptr) {},
+            tensor_options);
+        state_dict.emplace(name, std::move(real_tensor));
       }
     }
   }
