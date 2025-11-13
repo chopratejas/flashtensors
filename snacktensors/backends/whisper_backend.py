@@ -3,14 +3,15 @@ import shutil
 from typing import Optional, Any, Tuple
 
 from .base import BaseBackend, DownloadResult
-from flashtensors.utils import init_logger
+from snacktensors.utils import init_logger
 
 logger = init_logger(__name__)
 
-class TransformersBackend(BaseBackend):
+class WhisperBackend(BaseBackend):
     @property
     def name(self) -> str:
-        return "transformers"
+        return "whisper"
+    
     #TODO: vllm_backend and this one does not have the same parameters, should we unified them somehow??
     async def download_model(
         self,
@@ -22,11 +23,11 @@ class TransformersBackend(BaseBackend):
     ) -> DownloadResult:
         import time
         from tempfile import TemporaryDirectory
-        from transformers import AutoModelForCausalLM
+        from transformers import WhisperForConditionalGeneration
         
         start_time = time.time()
-        
-        logger.info(f"Downloading and preparing transformers model {model_id} for fast loading")
+
+        logger.info(f"Downloading and preparing whisper model {model_id} for fast loading")
         model_path = os.path.join(self.name, model_id)  # Relative path
         full_model_path = os.path.join(self.storage_path, self.name, model_id)  # Absolute path
         
@@ -66,22 +67,20 @@ class TransformersBackend(BaseBackend):
             transform_start = time.time()
             logger.info(f"Transforming model to fast-loading format...")
             
-            from flashtensors.integrations.transformers import save_model
-            from transformers import AutoTokenizer
+            from snacktensors.integrations.transformers import save_model
+            from transformers import WhisperProcessor
             
-            model = AutoModelForCausalLM.from_pretrained(
-                temp_model_path,
-                torch_dtype=torch_dtype,
-                trust_remote_code=True,
+            model = WhisperForConditionalGeneration.from_pretrained(
+                temp_model_path, token=hf_token
             )
-            
-            tokenizer = AutoTokenizer.from_pretrained(temp_model_path)
-            tokenizer.save_pretrained(full_model_path)
+
+            processor = WhisperProcessor.from_pretrained(temp_model_path, token=hf_token)
+            processor.save_pretrained(full_model_path)
 
             save_model(model, full_model_path)
             
             del model
-            del tokenizer
+            del processor
             import gc
             gc.collect()
             
@@ -119,13 +118,12 @@ class TransformersBackend(BaseBackend):
         model_id: str,
         torch_dtype = None,
         device_map: str = "auto",
-        hf_model_class: str = "AutoModelForCausalLM",
         quantization_config=None,
         **kwargs
     ) -> Tuple[Any, Any]:
         try:
-            from transformers import AutoTokenizer
-            from flashtensors.integrations.transformers import load_model as fast_load_model
+            from transformers import WhisperProcessor
+            from snacktensors.integrations.transformers import load_model as fast_load_model
             
             relative_model_path = os.path.join(self.name, model_id)
             full_model_path = os.path.join(self.storage_path, self.name, model_id)
@@ -140,7 +138,7 @@ class TransformersBackend(BaseBackend):
             
             if not os.path.exists(os.path.join(full_model_path, "tensor_index.json")):
                 raise ValueError(
-                    f"Model {model_id} is not in flashtensors fast-loading format. "
+                    f"Model {model_id} is not in SnackTensors fast-loading format. "
                     f"Please re-register with flash.register_model('{model_id}', backend='transformers', force=True)"
                 )
             
@@ -151,13 +149,13 @@ class TransformersBackend(BaseBackend):
                 quantization_config=quantization_config,
                 storage_path=self.storage_path,
                 fully_parallel=True,
-                hf_model_class=hf_model_class,
+                hf_model_class="WhisperForConditionalGeneration",
             )
             
-            tokenizer = AutoTokenizer.from_pretrained(full_model_path)
+            processor = WhisperProcessor.from_pretrained(full_model_path)
             
             logger.info(f"✅ Transformers model {model_id} loaded with fast loading")
-            return model, tokenizer
+            return model, processor
             
         except Exception as e:
             logger.error(f"❌ Failed to fast load transformers model {model_id}: {e}")

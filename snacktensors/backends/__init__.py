@@ -3,7 +3,7 @@ from .base import BaseBackend, DownloadResult
 from .vllm_backend import VLLMBackend
 from .transformers_backend import TransformersBackend
 from .whisper_backend import WhisperBackend
-from flashtensors.config import get_storage_path
+from snacktensors.config import get_storage_path
 
 class BackendRegistry:
     def __init__(self):

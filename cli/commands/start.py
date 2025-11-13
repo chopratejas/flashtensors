@@ -1,5 +1,5 @@
 """
-Start command for the Flash engine in the Flash CLI.
+Start command for the Snack engine in the Flash CLI.
 """
 
 import argparse
@@ -15,7 +15,7 @@ from click import Context
 from rich.console import Console
 from rich.panel import Panel
 
-import flashtensors as flash
+import snacktensors as flash
 from cli.commands.base import BaseCommand, InteractiveCommandMixin
 from cli.styles.colors import ERROR, SUCCESSFULL_UPDATE, WARNING
 
@@ -26,7 +26,7 @@ _DEFAULT_PORT = 8073
 
 
 class StartCommand(BaseCommand, InteractiveCommandMixin):
-    """Handle starting the Flash engine in the Flash CLI."""
+    """Handle starting the Snack engine in the Flash CLI."""
 
     def __init__(self):
         super().__init__()
@@ -35,7 +35,7 @@ class StartCommand(BaseCommand, InteractiveCommandMixin):
     def command(self):
         """Return the Click command instance."""
 
-        @click.command(help="Start the Flash engine")
+        @click.command(help="Start the Snack engine")
         @click.option(
             "--port",
             "-p",
@@ -68,7 +68,7 @@ class StartCommand(BaseCommand, InteractiveCommandMixin):
         storage_path: Optional[str] = _DEFAULT_STORAGE_PATH,
         memory_limit: Optional[int] = _DEFAULT_MEMORY_LIMIT,
     ) -> None:
-        """Start the Flash engine with the given parameters.
+        """Start the Snack engine with the given parameters.
 
         Args:
             port: Port to run the engine on
@@ -105,7 +105,7 @@ class StartCommand(BaseCommand, InteractiveCommandMixin):
     def get_interactive_commands(cls):
         """Return interactive command help text."""
         return {
-            "start": "Start the Flash engine",
+            "start": "Start the Snack engine",
             "start --port <port>": "Start on a specific port",
             "start --storage_path <path>": "Set custom storage path",
             "start --memory-limit <limit>": "Set memory limit",

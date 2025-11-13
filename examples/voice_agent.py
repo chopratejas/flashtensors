@@ -18,9 +18,9 @@ import gc
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
 
 try:
-    import flashtensors as flash
+    import snacktensors as flash
 except ImportError as e:
-    print(f"Failed to import flashtensors: {e}")
+    print(f"Failed to import snacktensors: {e}")
     sys.exit(1)
 
 

@@ -168,7 +168,7 @@ class cmake_build_ext(build_ext):
         for ext in self.extensions:
             self.configure(ext)
 
-            #ext_target_name = remove_prefix(ext.name, "flashtensors.")
+            #ext_target_name = remove_prefix(ext.name, "snacktensors.")
             ext_target_name = ext.name.split(".")[-1]
             
             build_args = [
@@ -186,17 +186,17 @@ install_requires = fetch_requirements("requirements.txt")
 
 # Setup configuration
 setup(
-    name="flashtensors",
+    name="snacktensors",
     version="0.1.0",
-    author="Flash Tensors Team",
-    author_email="team@flashtensors.com",
+    author="Snack Tensors Team",
+    author_email="team@snacktensors.com",
     description="Ultra-fast AI model loading library with CUDA acceleration",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
     packages=find_packages(),
     ext_modules=[
-        CMakeExtension(name="flashtensors._C"),
-        CMakeExtension(name="flashtensors._checkpoint_store"),
+        CMakeExtension(name="snacktensors._C"),
+        CMakeExtension(name="snacktensors._checkpoint_store"),
     ],
     cmdclass={
         "build_ext": cmake_build_ext,
@@ -205,7 +205,7 @@ setup(
     install_requires=install_requires,
     python_requires=">=3.8",
     package_data={
-        "flashtensors": ["*.so", "*.pyd", "py.typed", "*.conf"],
+        "snacktensors": ["*.so", "*.pyd", "py.typed", "*.conf"],
     },
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -223,7 +223,7 @@ setup(
     keywords="AI, machine learning, model loading, CUDA, GPU acceleration",
     entry_points={
         'console_scripts': [
-            'flash=cli.flash:cli',
+            'snack=cli.snack:cli',
         ],
     },
 )

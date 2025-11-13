@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from typing import Optional, Any
 
 from .base import BaseBackend, DownloadResult
-from flashtensors.utils import init_logger
+from snacktensors.utils import init_logger
 
 logger = init_logger(__name__)
 
@@ -180,7 +180,7 @@ class VLLMBackend(BaseBackend):
         gpu_memory_utilization: Optional[float] = None,
         **kwargs
     ) -> Any:
-        from flashtensors.config import get_config
+        from snacktensors.config import get_config
         
         config = get_config()
         if gpu_memory_utilization is None:

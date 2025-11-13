@@ -1,5 +1,5 @@
 """
-FlashEngine Library - Ultra-fast AI model loading with CUDA acceleration
+SnackTensors Library - Ultra-fast AI model loading with CUDA acceleration
 """
 
 __version__ = "0.1.0"
@@ -145,7 +145,7 @@ __all__ = [
 
 
 def info():
-    print(f"FlashEngine library v{__version__}")
+    print(f"SnackTensors library v{__version__}")
     print(f"C++ extensions available: {_extensions_available}")
     if not _extensions_available:
         print(f"Import error: {_import_error}")

@@ -11,7 +11,17 @@ DEFAULT_GPU_MEMORY_UTILIZATION = 0.8
 DEFAULT_SERVER_HOST = "0.0.0.0"
 DEFAULT_SERVER_PORT = 8073
 
-CONFIG_FILE = os.path.expanduser("~/.flashtensors/config.json")
+# Performance optimization defaults (Phase 1+)
+DEFAULT_NUM_TRANSFER_STREAMS = 8      # CUDA streams for async H2D transfers
+DEFAULT_USE_ADAPTIVE_SYNC = True      # Adaptive sync vs fixed sleep
+DEFAULT_MIN_SYNC_WAIT_MS = 1.0        # Minimum sync wait time (ms)
+DEFAULT_MAX_SYNC_WAIT_MS = 10.0       # Maximum sync wait time (ms)
+
+# Phase 2: CUDA Graphs
+DEFAULT_ENABLE_CUDA_GRAPHS = True     # Enable CUDA graph optimization
+DEFAULT_MAX_GRAPH_CACHE_SIZE = 10     # Max number of cached graphs (LRU)
+
+CONFIG_FILE = os.path.expanduser("~/.snacktensors/config.json")
 _config_lock = threading.Lock()
 
 def _get_default_config() -> Dict[str, Any]:
@@ -25,6 +35,14 @@ def _get_default_config() -> Dict[str, Any]:
         "server_host": DEFAULT_SERVER_HOST,
         "server_port": DEFAULT_SERVER_PORT,
         "registration_required": False,
+        # Performance optimizations
+        "num_transfer_streams": DEFAULT_NUM_TRANSFER_STREAMS,
+        "use_adaptive_sync": DEFAULT_USE_ADAPTIVE_SYNC,
+        "min_sync_wait_ms": DEFAULT_MIN_SYNC_WAIT_MS,
+        "max_sync_wait_ms": DEFAULT_MAX_SYNC_WAIT_MS,
+        # Phase 2: CUDA Graphs
+        "enable_cuda_graphs": DEFAULT_ENABLE_CUDA_GRAPHS,
+        "max_graph_cache_size": DEFAULT_MAX_GRAPH_CACHE_SIZE,
     }
 
 def _load_config_from_file() -> Dict[str, Any]:
@@ -53,12 +71,12 @@ def _save_config_to_file(config: Dict[str, Any]) -> None:
 def _set_environment_variables(config: Dict[str, Any]) -> None:
     """Set environment variables based on config values."""
     env_vars = {
-        "FLASHENGINE_HOST": str(config["server_host"]),
-        "FLASHENGINE_PORT": str(config["server_port"]),
-        "FLASHENGINE_STORAGE_PATH": str(config["storage_path"]),
-        "FLASHENGINE_NUM_THREADS": str(config["num_threads"]),
-        "FLASHENGINE_CHUNK_SIZE": str(config["chunk_size"]),
-        "FLASHENGINE_MEM_POOL_SIZE": str(config["mem_pool_size"]),
+        "SNACKTENSORS_HOST": str(config["server_host"]),
+        "SNACKTENSORS_PORT": str(config["server_port"]),
+        "SNACKTENSORS_STORAGE_PATH": str(config["storage_path"]),
+        "SNACKTENSORS_NUM_THREADS": str(config["num_threads"]),
+        "SNACKTENSORS_CHUNK_SIZE": str(config["chunk_size"]),
+        "SNACKTENSORS_MEM_POOL_SIZE": str(config["mem_pool_size"]),
         "STORAGE_PATH": str(config["storage_path"]),  # Legacy support
     }
     
@@ -76,7 +94,7 @@ def get_config() -> Dict[str, Any]:
     return config
 
 def is_server_running() -> bool:
-    """Check if FlashEngine server is currently running."""
+    """Check if SnackTensors server is currently running."""
     import grpc
     from .proto import storage_pb2, storage_pb2_grpc
     
@@ -152,7 +170,7 @@ def get_server_config() -> Dict[str, Any]:
 def print_config() -> None:
     """Print current configuration for debugging."""
     config = get_config()
-    print("FlashEngine Configuration:")
+    print("SnackTensors Configuration:")
     print("=" * 40)
     for key, value in config.items():
         if key in ["mem_pool_size", "chunk_size"]:

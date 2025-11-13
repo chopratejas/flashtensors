@@ -16,23 +16,23 @@ from transformers.integrations.bitsandbytes import (
 )
 from torch import nn
 
-from flashtensors.storage_client import StorageClient
-from flashtensors.config import get_storage_path
-from flashtensors._C import (
+from snacktensors.storage_client import StorageClient
+from snacktensors.config import get_storage_path
+from snacktensors._C import (
     allocate_cuda_memory,
     get_cuda_memory_handles,
     get_device_uuid_map,
     restore_tensors,
 )
-from flashtensors.torch_storage import load_dict_non_blocking, save_dict
-from flashtensors.utils.device_map_utils import (
+from snacktensors.torch_storage import load_dict_non_blocking, save_dict
+from snacktensors.utils.device_map_utils import (
     DeviceMapType,
     _compute_device_placement_from_map,
     _compute_device_placement_from_map_fast,
     _expand_tensor_name,
     _transform_device_map_to_dict,
 )
-from flashtensors.utils import (
+from snacktensors.utils import (
     init_logger,
     calculate_device_memory,
     calculate_tensor_device_offsets,
@@ -58,7 +58,7 @@ def _get_uuid():
 
 def save_model(model: nn.Module, model_path: str):
     """
-    Save a transformers model in flashtensors format for fast loading.
+    Save a transformers model in snacktensors format for fast loading.
     
     Args:
         model: PyTorch model to save
@@ -70,7 +70,7 @@ def save_model(model: nn.Module, model_path: str):
     model = model.cpu()
     model_state_dict = model.state_dict()
 
-    # Save tensors using flashtensors's optimized storage
+    # Save tensors using snacktensors' optimized storage
     save_dict(model_state_dict, model_path)
 
     # Save model configuration
@@ -88,12 +88,12 @@ def save_model(model: nn.Module, model_path: str):
     with open(os.path.join(model_path, "tied_no_split_modules.json"), "w") as f:
         json.dump(tied_no_split_modules, f)
 
-    logger.info(f"Model saved to {model_path} in flashtensors format")
+    logger.info(f"Model saved to {model_path} in snacktensors format")
 
 
 def save_lora(lora: PeftModel, lora_path: str):
     """
-    Save a LoRA adapter in flashtensors format.
+    Save a LoRA adapter in snacktensors format.
     
     Args:
         lora: PeftModel with LoRA adapters
@@ -134,7 +134,7 @@ def load_model(
     hf_model_class: str = "AutoModelForCausalLM",
 ):
     """
-    Load a transformers model with flashtensors's fast loading.
+    Load a transformers model with snacktensors' fast loading.
     
     Args:
         model_path: Path to the model (relative to storage path)
@@ -151,7 +151,7 @@ def load_model(
     if storage_path is None:
         storage_path = get_storage_path()
     
-    logger.info(f"🚀 Loading {hf_model_class} model {model_path} with flashtensors fast loading...")
+    logger.info(f"🚀 Loading {hf_model_class} model {model_path} with snacktensors fast loading...")
     
     if fully_parallel:
         return fully_parallel_load(

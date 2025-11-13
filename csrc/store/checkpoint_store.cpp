@@ -383,3 +383,70 @@ MemPtrListMap CheckpointStore::GetDevicePtrsFromMemHandles(
   }
   return gpu_ptrs;
 }
+
+// ============================================================================
+// Phase 2: CUDA Graph Management Methods
+// ============================================================================
+
+std::shared_ptr<CheckpointStore::ModelLoadGraph>
+CheckpointStore::GetOrCreateGraph(const std::string &model_path) {
+  std::lock_guard<std::mutex> lock(graph_cache_mutex_);
+
+  auto it = graph_cache_.find(model_path);
+  if (it != graph_cache_.end()) {
+    // Update last used time
+    it->second->last_used_ = std::chrono::system_clock::now();
+    LOG(INFO) << "Found cached CUDA graph for model: " << model_path;
+    return it->second;
+  }
+
+  // Create new graph entry
+  auto graph = std::make_shared<ModelLoadGraph>();
+  graph->model_path_ = model_path;
+  graph->last_used_ = std::chrono::system_clock::now();
+
+  // Check if we need to evict old graphs
+  if (graph_cache_.size() >= max_graph_cache_size_) {
+    LOG(INFO) << "Graph cache full, evicting oldest entry";
+    EvictOldestGraph();
+  }
+
+  graph_cache_[model_path] = graph;
+  LOG(INFO) << "Created new CUDA graph entry for model: " << model_path;
+
+  return graph;
+}
+
+void CheckpointStore::EvictOldestGraph() {
+  // Find oldest graph by last_used_ time
+  std::string oldest_model;
+  auto oldest_time = std::chrono::system_clock::now();
+
+  for (const auto &[model_path, graph] : graph_cache_) {
+    if (graph->last_used_ < oldest_time) {
+      oldest_time = graph->last_used_;
+      oldest_model = model_path;
+    }
+  }
+
+  if (!oldest_model.empty()) {
+    LOG(INFO) << "Evicting CUDA graph for model: " << oldest_model;
+    graph_cache_.erase(oldest_model);
+  }
+}
+
+void CheckpointStore::ClearGraphCache() {
+  std::lock_guard<std::mutex> lock(graph_cache_mutex_);
+  LOG(INFO) << "Clearing all " << graph_cache_.size() << " cached CUDA graphs";
+  graph_cache_.clear();
+}
+
+bool CheckpointStore::ShouldUseGraph(const std::string &model_path) {
+  if (!enable_cuda_graphs_) {
+    return false;
+  }
+
+  // Use graphs for models we've seen before (repeat loads)
+  std::lock_guard<std::mutex> lock(graph_cache_mutex_);
+  return graph_cache_.find(model_path) != graph_cache_.end();
+}

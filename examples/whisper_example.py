@@ -4,9 +4,9 @@ import torch
 import librosa
 
 try:
-    import flashtensors as flash
+    import snacktensors as flash
 except ImportError as e:
-    print(f"Failed to import flashtensors: {e}")
+    print(f"Failed to import snacktensors: {e}")
     print("Make sure you've built and installed the C++ extensions:")
     print("1. cd flashtensors")
     print("2. python setup.py build_ext --inplace")

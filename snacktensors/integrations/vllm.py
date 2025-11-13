@@ -19,9 +19,9 @@ from vllm.model_executor import model_loader
 from vllm.worker.model_runner import GPUModelRunnerBase
 from vllm.engine.arg_utils import EngineArgs
 
-from flashtensors.torch_storage import save_dict, load_dict
-from flashtensors.config import get_storage_path
-from flashtensors.utils.logger import init_logger
+from snacktensors.torch_storage import save_dict, load_dict
+from snacktensors.config import get_storage_path
+from snacktensors.utils.logger import init_logger
 
 logger = init_logger(__name__)
 
