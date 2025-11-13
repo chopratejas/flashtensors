@@ -206,7 +206,8 @@ class VLLMBackend(BaseBackend):
                 dtype=dtype,
                 gpu_memory_utilization=gpu_memory_utilization,
                 trust_remote_code=True,
-                enforce_eager=True
+                enforce_eager=True,
+                **kwargs  # Pass through additional vLLM parameters
             )
             
             logger.info(f"✅ VLLM model {model_id} loaded successfully")
