@@ -342,14 +342,6 @@ int Model::ToGpu(
 
           auto &host_buffers = pinned_mem_->get();
 
-          // OPTIMIZATION: Multi-stream async transfers for 2-3x speedup
-          const int num_streams = 4;  // 4 concurrent streams for overlap
-          std::vector<cudaStream_t> streams(num_streams);
-          for (int i = 0; i < num_streams; ++i) {
-            CUDA_CHECK(cudaStreamCreate(&streams[i]),
-                      "cudaStreamCreate Error");
-          }
-
           // Collect all transfer operations first
           struct TransferOp {
             size_t chunk_id;
@@ -370,8 +362,6 @@ int Model::ToGpu(
             if (gpu_replica->state_ == MemoryState::CANCELLED) {
               LOG(INFO) << "Loading from mem for model " << model_path_
                         << " is cancelled, chunk " << chunk_id;
-              // Clean up streams before returning
-              for (auto& stream : streams) cudaStreamDestroy(stream);
               return 0;
             }
 
@@ -380,12 +370,23 @@ int Model::ToGpu(
           }
 
           LOG(INFO) << "Starting " << transfers.size()
-                    << " async transfers across " << num_streams
-                    << " streams for device " << device_id;
+                    << " transfers to device " << device_id
+                    << " using CUDA graphs";
 
-          // Issue all async transfers across multiple streams
+          // OPTIMIZATION: CUDA graphs for reduced kernel launch overhead
+          cudaStream_t stream;
+          CUDA_CHECK(cudaStreamCreate(&stream), "cudaStreamCreate Error");
+
+          // Begin capturing CUDA graph
+          cudaGraph_t graph;
+          cudaGraphExec_t graph_exec;
+
+          LOG(INFO) << "Capturing CUDA graph for " << transfers.size() << " transfers...";
+          CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal),
+                    "cudaStreamBeginCapture Error");
+
+          // Issue all transfers on single stream (will be captured in graph)
           for (size_t i = 0; i < transfers.size(); ++i) {
-            int stream_idx = i % num_streams;  // Round-robin across streams
             auto& op = transfers[i];
 
             CUDA_CHECK(
@@ -394,25 +395,38 @@ int Model::ToGpu(
                     (void *)(host_buffers[op.chunk_id] + op.chunk_offset),
                     op.size,
                     cudaMemcpyHostToDevice,
-                    streams[stream_idx]),
+                    stream),
                 "cudaMemcpyAsync Error");
           }
 
-          // CRITICAL: Synchronize ALL streams before proceeding
-          LOG(INFO) << "Synchronizing " << num_streams << " CUDA streams...";
-          for (int i = 0; i < num_streams; ++i) {
-            CUDA_CHECK(cudaStreamSynchronize(streams[i]),
-                      "cudaStreamSynchronize Error");
-          }
+          // End graph capture
+          CUDA_CHECK(cudaStreamEndCapture(stream, &graph),
+                    "cudaStreamEndCapture Error");
 
-          // Clean up streams
-          for (auto& stream : streams) {
-            cudaStreamDestroy(stream);
-          }
+          // Instantiate the graph
+          CUDA_CHECK(cudaGraphInstantiate(&graph_exec, graph, NULL, NULL, 0),
+                    "cudaGraphInstantiate Error");
+
+          LOG(INFO) << "Launching CUDA graph with " << transfers.size() << " transfers...";
+
+          // Launch the graph (this replays all captured operations)
+          CUDA_CHECK(cudaGraphLaunch(graph_exec, stream),
+                    "cudaGraphLaunch Error");
+
+          // CRITICAL: Synchronize stream to ensure all transfers complete
+          CUDA_CHECK(cudaStreamSynchronize(stream),
+                    "cudaStreamSynchronize Error");
+
+          LOG(INFO) << "CUDA graph completed successfully";
+
+          // Clean up
+          cudaGraphExecDestroy(graph_exec);
+          cudaGraphDestroy(graph);
+          cudaStreamDestroy(stream);
 
           LOG(INFO) << "Finished loading " << loaded_size
                     << " bytes to device " << device_id
-                    << " using multi-stream transfers";
+                    << " using CUDA graphs";
 
           return 0;
         }));
