@@ -182,7 +182,7 @@ class FlashLLMLoader(BaseModelLoader):
 
 
 def patch_model_loader(load_config: LoadConfig):
-    if load_config.load_format == "flash":
+    if load_config.load_format in ("flash", "flashtensors"):
         return FlashLLMLoader(load_config=load_config)
 
     return get_model_loader(load_config)

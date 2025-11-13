@@ -284,9 +284,10 @@ def cleanup_gpu():
             import torch.distributed as dist
 
             if dist.is_initialized():
-                logger.info("Destroying distributed process group...")
-                dist.destroy_process_group()
-                logger.info("✅ Distributed process group destroyed")
+                logger.info("Skipping distributed process group destruction (vLLM needs it)...")
+                # NOTE: Commenting out process group destruction because vLLM needs it during model loading
+                # dist.destroy_process_group()
+                # logger.info("✅ Distributed process group destroyed")
         except ImportError:
             pass
         except Exception as e:
