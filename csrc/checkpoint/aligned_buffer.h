@@ -38,4 +38,5 @@ private:
   size_t buf_pos_;
   size_t file_offset_;
   void *buffer_;
+  std::string filename_;
 };

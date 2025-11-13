@@ -50,6 +50,9 @@ std::unordered_map<std::string, uint64_t> SaveTensors(
     std::unordered_map<std::string, std::pair<uint64_t, uint64_t>> &tensor_data,
     const std::string &path) {
   std::string tensor_filename = std::filesystem::path(path) / "tensor.data";
+  std::cerr << "SaveTensors: path=" << path << ", tensor_filename=" << tensor_filename
+            << ", num_tensors=" << tensor_names.size() << std::endl;
+
   // make a tensor writer
   TensorWriter writer(tensor_filename);
   // make a tensor index
@@ -60,6 +63,7 @@ std::unordered_map<std::string, uint64_t> SaveTensors(
 
   int total = tensor_names.size();
   int count = 0;
+  size_t total_written = 0;
 
   for (const auto &name : tensor_names) {
     const auto &[base, size] = tensor_data[name];
@@ -70,14 +74,23 @@ std::unordered_map<std::string, uint64_t> SaveTensors(
     }
     data_record[data_ptr] = name;
 
+    if (count == 0) {
+      std::cerr << "First tensor: name=" << name << ", base=" << base
+                << ", size=" << size << ", data_ptr=" << (void*)data_ptr << std::endl;
+    }
+
     uint64_t offset = writer.writeRecord(data_ptr, size);
     tensor_offsets[name] = offset;
+    total_written += size;
 
     // Update progress bar
     count++;
     float progress = static_cast<float>(count) / total;
     showProgressBar(progress, "Saving tensors: ");
   }
+
+  std::cerr << "SaveTensors: wrote " << count << " tensors, total_written="
+            << total_written / 1024 / 1024 << "MB" << std::endl;
 
   return tensor_offsets;
 }
