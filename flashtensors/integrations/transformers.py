@@ -173,6 +173,32 @@ def load_model(
         )
 
 
+def _parse_torch_dtype(dtype):
+    """Convert string dtype to torch dtype object."""
+    if dtype is None:
+        return None
+    if isinstance(dtype, torch.dtype):
+        return dtype
+    if isinstance(dtype, str):
+        dtype_map = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+            "float64": torch.float64,
+            "int8": torch.int8,
+            "int16": torch.int16,
+            "int32": torch.int32,
+            "int64": torch.int64,
+        }
+        dtype_lower = dtype.lower()
+        if dtype_lower in dtype_map:
+            return dtype_map[dtype_lower]
+        # Try to get it as an attribute
+        if hasattr(torch, dtype_lower):
+            return getattr(torch, dtype_lower)
+    raise ValueError(f"Invalid torch_dtype: {dtype}")
+
+
 def fully_parallel_load(
     model_path: Optional[Union[str, os.PathLike]],
     hf_model_class: str,
@@ -184,6 +210,9 @@ def fully_parallel_load(
     """Fully parallel model loading with concurrent tensor loading and model initialization."""
     start = time.time()
     device_map = _transform_device_map_to_dict(device_map)
+    
+    # Convert torch_dtype string to torch dtype object if needed
+    torch_dtype = _parse_torch_dtype(torch_dtype)
     
     # Load tied module information
     with open(
@@ -223,19 +252,27 @@ def fully_parallel_load(
         with init_empty_weights():
             module = importlib.import_module("transformers")
             _class = getattr(module, hf_model_class)
+            # Get the actual dtype for .to() - use config.torch_dtype if set, otherwise None
+            model_dtype = getattr(config, 'torch_dtype', None) if torch_dtype is None else torch_dtype
             if hasattr(_class, "from_config"):
                 model = _class.from_config(
                     config,
                     trust_remote_code=True,
-                ).to(config.torch_dtype)
+                )
+                if model_dtype is not None:
+                    model = model.to(model_dtype)
             elif hasattr(_class, "_from_config"):
                 model = _class._from_config(
                     config
-                ).to(config.torch_dtype)
+                )
+                if model_dtype is not None:
+                    model = model.to(model_dtype)
             else:
                 model = _class(
                     config
-                ).to(config.torch_dtype)
+                )
+                if model_dtype is not None:
+                    model = model.to(model_dtype)
         model.tie_weights()
         logger.debug(f"load model takes {time.time() - start} seconds")
 
@@ -253,6 +290,16 @@ def fully_parallel_load(
         torch_dtype=torch_dtype,
     )
     
+    # CRITICAL: Set device_map on model for proper multi-GPU handling
+    # This allows transformers to know which modules are on which devices
+    model.hf_device_map = device_map
+    
+    # CRITICAL: dispatch_model wraps model modules to handle cross-device operations
+    # This is REQUIRED for multi-GPU models to work correctly during inference
+    # It must be called AFTER tensors are set because it needs to see the actual
+    # device placement of tensors to create proper hooks
+    dispatch_model(model, device_map, skip_keys=getattr(model, '_skip_keys_device_placement', []))
+    
     model.eval()
     logger.info(f"✅ Model {model_path} loaded successfully with fully parallel loading")
     return model
@@ -267,6 +314,9 @@ def best_effort_load(
 ):
     """Best effort model loading with optimized memory management."""
     client = StorageClient()
+    
+    # Convert torch_dtype string to torch dtype object if needed
+    torch_dtype = _parse_torch_dtype(torch_dtype)
     
     # Load model into CPU first
     ret = client.load_into_cpu(model_path)
@@ -300,7 +350,11 @@ def best_effort_load(
         model = _class.from_config(
                 config,
                 trust_remote_code=True,
-            ).to(config.torch_dtype)
+            )
+        # Convert dtype if needed before calling .to()
+        model_dtype = getattr(config, 'torch_dtype', None) if torch_dtype is None else torch_dtype
+        if model_dtype is not None:
+            model = model.to(model_dtype)
     model.tie_weights()
     logger.debug(f"load model takes {time.time() - start} seconds")
 

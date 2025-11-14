@@ -100,22 +100,32 @@ class RunCommand(BaseCommand, InteractiveCommandMixin):
     def _run_model(self, model_name: str, prompt: Optional[str] = None):
         """Run the specified model."""
         import time
+        from transformers import AutoTokenizer
+        from flashtensors.config import get_storage_path
+        
         load_start_time = time.time()
         
-        model, tokenizer = flash.load_model(
+        # Load model
+        model = flash.load_model(
             model_id=model_name,
             backend="transformers",
             torch_dtype=torch.float16,
             device_map="auto"
         )
         
+        # Load tokenizer separately (transformers backend doesn't return tokenizer)
+        storage_path = get_storage_path()
+        model_path = os.path.join(storage_path, "transformers", model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        
         load_time = time.time() - load_start_time
         
         print(prompt)
         # Tokenize input
         inputs = tokenizer(prompt, return_tensors="pt")
-        if torch.cuda.is_available():
-            inputs = {k: v.to('cuda') for k, v in inputs.items()}
+        # Move inputs to the same device as the model
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
         
         # Generate text
         start_generate = time.time()

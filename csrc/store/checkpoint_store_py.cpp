@@ -17,6 +17,15 @@
 //  ----------------------------------------------------------------------------
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
+// Include glog before torch to avoid macro redefinition conflicts
+#include <glog/logging.h>
+// Undefine torch's logging macros if they conflict
+#ifdef VLOG
+#undef VLOG
+#endif
+#ifdef VLOG_IF
+#undef VLOG_IF
+#endif
 #include <torch/extension.h>
 
 #include "checkpoint_store.h"

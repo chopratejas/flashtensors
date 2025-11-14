@@ -131,43 +131,109 @@ std::unordered_map<std::string, torch::Tensor> RestoreTensors(
     const std::unordered_map<int, void *> &memory_base_address,
     const std::unordered_map<int, std::unordered_map<std::string, uint64_t>>
         &tensor_device_offsets) {
+  std::cerr << "RestoreTensors: Starting restoration of " << meta_state_dict.size() << " tensors" << std::endl;
+  std::cerr << "RestoreTensors: memory_base_address has " << memory_base_address.size() << " devices" << std::endl;
+  std::cerr << "RestoreTensors: tensor_device_offsets has " << tensor_device_offsets.size() << " devices" << std::endl;
+  
   std::unordered_map<std::string, torch::Tensor> state_dict;
   std::unordered_set<void *> handled_memory;
+  size_t tensor_count = 0;
+  
   for (const auto &[device, tensor_offset] : tensor_device_offsets) {
+    std::cerr << "RestoreTensors: Processing device " << device << " with " << tensor_offset.size() << " tensors" << std::endl;
+    
+    if (memory_base_address.find(device) == memory_base_address.end()) {
+      std::cerr << "ERROR: Cannot find device " << device << " in memory_base_address" << std::endl;
+      std::cerr << "Available devices: ";
+      for (const auto &[d, _] : memory_base_address) {
+        std::cerr << d << " ";
+      }
+      std::cerr << std::endl;
+      exit(1);
+    }
+    
+    void *base_address = memory_base_address.at(device);
+    std::cerr << "RestoreTensors: Device " << device << " base_address=" << base_address << std::endl;
+    
     for (const auto &p : tensor_offset) {
       std::string name = p.first;
-      if (memory_base_address.find(device) != memory_base_address.end()) {
-        void *base_address = memory_base_address.at(device);
-        uint64_t offset = reinterpret_cast<uint64_t>(base_address) + p.second;
+      uint64_t tensor_offset_value = p.second;
+      
+      uint64_t offset = reinterpret_cast<uint64_t>(base_address) + tensor_offset_value;
+      void *tensor_ptr = reinterpret_cast<void *>(offset);
 
-        torch::Device tensor_device(torch::kCUDA, device);
-        auto [sizes, strides, type_str] = meta_state_dict.at(name);
-        at::ScalarType dtype = stringToScalarType(type_str);
-        // std::cerr << name << " " << sizes << " " << strides << " " << dtype
-        // << std::endl;
-        if (p.second == 0 &&
-            handled_memory.find(base_address) == handled_memory.end()) {
-          torch::Tensor real_tensor = torch::from_blob(
-              reinterpret_cast<void *>(offset), c10::makeArrayRef(sizes),
-              c10::makeArrayRef(strides), [](void *ptr) { cudaFree(ptr); },
-              torch::TensorOptions().device(tensor_device).dtype(dtype));
-          state_dict[name] = real_tensor;
-          handled_memory.insert(base_address);
-          // std::cerr << "Tensor " << name << " is restored to device " <<
-          // device << std::endl;
-        } else {
-          torch::Tensor real_tensor = torch::from_blob(
-              reinterpret_cast<void *>(offset), sizes, strides,
-              [](void *ptr) {},
-              torch::TensorOptions().device(tensor_device).dtype(dtype));
-          state_dict[name] = real_tensor;
-        }
-      } else {
-        std::cerr << "Cannot find device " << device << std::endl;
+      torch::Device tensor_device(torch::kCUDA, device);
+      
+      if (meta_state_dict.find(name) == meta_state_dict.end()) {
+        std::cerr << "ERROR: Tensor " << name << " not found in meta_state_dict" << std::endl;
         exit(1);
       }
+      
+      auto [sizes, strides, type_str] = meta_state_dict.at(name);
+      at::ScalarType dtype = stringToScalarType(type_str);
+      
+      // Calculate tensor size for validation
+      size_t tensor_size = 1;
+      for (int64_t s : sizes) {
+        tensor_size *= s;
+      }
+      // Get dtype size in bytes
+      size_t dtype_size = 0;
+      switch (dtype) {
+        case torch::kFloat32: dtype_size = 4; break;
+        case torch::kFloat16: dtype_size = 2; break;
+        case torch::kBFloat16: dtype_size = 2; break;
+        case torch::kFloat64: dtype_size = 8; break;
+        case torch::kInt32: dtype_size = 4; break;
+        case torch::kInt64: dtype_size = 8; break;
+        case torch::kInt16: dtype_size = 2; break;
+        case torch::kInt8: dtype_size = 1; break;
+        case torch::kUInt8: dtype_size = 1; break;
+        default: dtype_size = 4; break; // Default to 4 bytes
+      }
+      size_t total_bytes = tensor_size * dtype_size;
+      
+      if (tensor_count < 10 || tensor_count % 100 == 0) {
+        std::cerr << "RestoreTensors: [" << tensor_count << "] " << name 
+                  << " device=" << device 
+                  << " offset=" << tensor_offset_value 
+                  << " ptr=" << tensor_ptr
+                  << " shape=" << sizes.size() << "d";
+        for (int64_t s : sizes) {
+          std::cerr << "x" << s;
+        }
+        std::cerr << " dtype=" << type_str 
+                  << " size=" << total_bytes / 1024 / 1024 << "MB" << std::endl;
+      }
+      
+      // Validate pointer is within reasonable bounds
+      if (tensor_ptr < base_address) {
+        std::cerr << "ERROR: Tensor " << name << " pointer " << tensor_ptr 
+                  << " is before base_address " << base_address << std::endl;
+        exit(1);
+      }
+      
+      if (tensor_offset_value == 0 &&
+          handled_memory.find(base_address) == handled_memory.end()) {
+        torch::Tensor real_tensor = torch::from_blob(
+            tensor_ptr, c10::makeArrayRef(sizes),
+            c10::makeArrayRef(strides), [](void *ptr) { cudaFree(ptr); },
+            torch::TensorOptions().device(tensor_device).dtype(dtype));
+        state_dict[name] = real_tensor;
+        handled_memory.insert(base_address);
+      } else {
+        torch::Tensor real_tensor = torch::from_blob(
+            tensor_ptr, sizes, strides,
+            [](void *ptr) {},
+            torch::TensorOptions().device(tensor_device).dtype(dtype));
+        state_dict[name] = real_tensor;
+      }
+      
+      tensor_count++;
     }
   }
+  
+  std::cerr << "RestoreTensors: Successfully restored " << state_dict.size() << " tensors" << std::endl;
   return state_dict;
 }
 

@@ -64,12 +64,20 @@ from .utils.device_map_utils import (
     DeviceMapType,
 )
 
-from .integrations.vllm import (
-    FlashLLMLoader,
-    activate as activate_vllm_integration,
-    save_llm_state,
-    patch_model_loader,
-)
+# Optional vLLM integration - make import optional to avoid dependency issues
+try:
+    from .integrations.vllm import (
+        FlashLLMLoader,
+        activate as activate_vllm_integration,
+        save_llm_state,
+        patch_model_loader,
+    )
+except ImportError as e:
+    # vLLM not available or has dependency issues - that's OK
+    FlashLLMLoader = None
+    activate_vllm_integration = None
+    save_llm_state = None
+    patch_model_loader = None
 
 from .config import (
     get_config,
