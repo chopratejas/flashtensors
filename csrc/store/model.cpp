@@ -22,7 +22,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef HAVE_LIBURING
 #include <liburing.h>
+#endif
 
 #include <algorithm>
 #include <condition_variable>
@@ -39,16 +41,8 @@
 
 #include "error_handling.h"
 
-// OPTIMIZATION: Cache CUDA graphs to avoid recreating on every load
-namespace {
-struct GraphCacheEntry {
-  cudaGraphExec_t graph_exec;
-  size_t num_transfers;
-  size_t total_size;
-};
-std::unordered_map<std::string, GraphCacheEntry> cuda_graph_cache_;
-std::mutex graph_cache_mutex_;
-}
+// CUDA graphs removed - reverted to simpler multi-stream approach
+// CUDA graphs caused cache invalidation issues when device pointers were closed
 
 int Model::Initialize(const std::filesystem::path storage_path) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -137,6 +131,7 @@ int Model::ToHost(int num_threads) {
   state_ = MemoryState::LOADING;
   lock.unlock();
 
+#ifdef HAVE_LIBURING
   // OPTIMIZATION: io_uring async disk I/O for 2-3x faster reads
   struct io_uring ring;
   // OPTIMIZATION: Use larger ring for big models (>1000 chunks ≈ 2GB+)
@@ -162,17 +157,31 @@ int Model::ToHost(int num_threads) {
     int fd;
     size_t file_offset;
     size_t partition_id;
+    size_t buffer_offset;  // Offset within the chunk buffer for split reads
   };
   std::vector<ReadRequest> read_requests;
 
-  size_t partition_id = 0;
-  size_t file_offset = 0;
+  // Calculate cumulative partition sizes for efficient boundary detection
+  std::vector<size_t> cumulative_partition_sizes;
+  size_t cumulative = 0;
+  for (size_t partition_size : partition_sizes_) {
+    cumulative += partition_size;
+    cumulative_partition_sizes.push_back(cumulative);
+  }
+  LOG(INFO) << "Model has " << partition_sizes_.size() << " partitions, cumulative sizes: ";
+  for (size_t i = 0; i < cumulative_partition_sizes.size(); ++i) {
+    LOG(INFO) << "  Partition " << i << ": " << partition_sizes_[i] / MB << "MB (cumulative: " << cumulative_partition_sizes[i] / MB << "MB)";
+  }
+
+  size_t global_offset = 0;
   for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
     size_t size = std::min(chunk_size, model_size_ - chunk_idx * chunk_size);
 
     if (host_buffers[chunk_idx] == nullptr) {
       LOG(ERROR) << "Host buffer not allocated";
+#ifdef HAVE_LIBURING
       io_uring_queue_exit(&ring);
+#endif
       lock.lock();
       state_ = MemoryState::INTERRUPTED;
       pinned_mem_.reset();
@@ -180,17 +189,80 @@ int Model::ToHost(int num_threads) {
       return -1;
     }
 
-    // Handle partition boundaries
-    while (partition_id < partition_sizes_.size() &&
-           file_offset >= partition_sizes_.at(partition_id)) {
-      file_offset -= partition_sizes_.at(partition_id);
-      partition_id += 1;
+    // Find which partition this chunk belongs to using cumulative sizes
+    // Handle chunks that may span partition boundaries by splitting them
+    size_t remaining_size = size;
+    size_t buffer_offset = 0;
+    
+    while (remaining_size > 0) {
+      // Find the partition containing the current global offset
+      size_t partition_id = 0;
+      size_t partition_offset = global_offset;
+      bool found_partition = false;
+      
+      for (size_t i = 0; i < cumulative_partition_sizes.size(); ++i) {
+        if (global_offset < cumulative_partition_sizes[i]) {
+          partition_id = i;
+          // Calculate offset within this partition
+          if (i > 0) {
+            partition_offset = global_offset - cumulative_partition_sizes[i - 1];
+          }
+          found_partition = true;
+          break;
+        }
+      }
+      
+      // Safety check: if we're beyond all partitions, something is wrong
+      if (!found_partition) {
+        LOG(ERROR) << "Chunk " << chunk_idx << " global_offset " << global_offset / MB 
+                   << "MB exceeds model size " << model_size_ / MB << "MB";
+        lock.lock();
+        state_ = MemoryState::INTERRUPTED;
+        pinned_mem_.reset();
+        state_ = MemoryState::UNALLOCATED;
+        io_uring_queue_exit(&ring);
+        return -1;
+      }
+      
+      // Bounds check: ensure partition_id is valid
+      if (partition_id >= partition_sizes_.size()) {
+        LOG(ERROR) << "Invalid partition_id " << partition_id << " (max: " 
+                   << (partition_sizes_.size() - 1) << ") for chunk " << chunk_idx 
+                   << " at global_offset " << global_offset / MB << "MB";
+        lock.lock();
+        state_ = MemoryState::INTERRUPTED;
+        pinned_mem_.reset();
+        state_ = MemoryState::UNALLOCATED;
+        io_uring_queue_exit(&ring);
+        return -1;
+      }
+      
+      // Calculate how much we can read from this partition
+      size_t remaining_in_partition = partition_sizes_[partition_id] - partition_offset;
+      size_t read_size = std::min(remaining_size, remaining_in_partition);
+      
+      if (chunk_idx < 10 || chunk_idx % 1000 == 0 || remaining_size != size) {
+        LOG(INFO) << "Chunk " << chunk_idx << " (buffer_offset=" << buffer_offset / MB << "MB): "
+                  << "global_offset=" << global_offset / MB << "MB, "
+                  << "partition_id=" << partition_id << ", "
+                  << "partition_offset=" << partition_offset / MB << "MB, "
+                  << "read_size=" << read_size / MB << "MB, "
+                  << "remaining=" << remaining_size / MB << "MB";
+      }
+      
+      if (remaining_size != size) {
+        LOG(WARNING) << "Chunk " << chunk_idx << " spans partition boundary - splitting read: "
+                     << "first_part=" << (size - remaining_size) / MB << "MB, "
+                     << "second_part=" << read_size / MB << "MB from partition " << partition_id;
+      }
+      
+      read_requests.push_back({
+          chunk_idx, read_size, file_descriptors[partition_id], partition_offset, partition_id, buffer_offset});
+      
+      global_offset += read_size;
+      remaining_size -= read_size;
+      buffer_offset += read_size;
     }
-
-    read_requests.push_back({
-        chunk_idx, size, file_descriptors[partition_id], file_offset, partition_id});
-
-    file_offset += size;
   }
 
   LOG(INFO) << "Prepared " << read_requests.size() << " io_uring read requests";
@@ -212,7 +284,12 @@ int Model::ToHost(int num_threads) {
         break;
       }
 
-      io_uring_prep_read(sqe, req.fd, host_buffers[req.chunk_idx],
+      // Calculate the correct buffer pointer, accounting for buffer_offset for split reads
+      void* read_buffer = host_buffers[req.chunk_idx];
+      if (req.buffer_offset > 0) {
+        read_buffer = static_cast<char*>(read_buffer) + req.buffer_offset;
+      }
+      io_uring_prep_read(sqe, req.fd, read_buffer,
                          req.size, req.file_offset);
       io_uring_sqe_set_data(sqe, (void *)(uintptr_t)req.chunk_idx);
     }
@@ -266,6 +343,141 @@ int Model::ToHost(int num_threads) {
 
   io_uring_queue_exit(&ring);
   LOG(INFO) << "Completed " << submitted << " io_uring read operations";
+
+#else
+  // FALLBACK: Multi-threaded pread() implementation (original code)
+  std::vector<std::future<int>> futures;
+  size_t chunk_per_thread = (num_chunks + num_threads - 1) / num_threads;
+  LOG(INFO) << "Loading model " << model_path_ << " to host with "
+            << num_threads << " threads, " << num_chunks << " chunks, "
+            << chunk_size << " chunk size, " << chunk_per_thread
+            << " chunks per thread";
+
+  // Calculate cumulative partition sizes for efficient boundary detection
+  std::vector<size_t> cumulative_partition_sizes;
+  size_t cumulative = 0;
+  for (size_t partition_size : partition_sizes_) {
+    cumulative += partition_size;
+    cumulative_partition_sizes.push_back(cumulative);
+  }
+
+  for (int thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
+    futures.emplace_back(std::async(std::launch::async, [&, thread_idx, cumulative_partition_sizes]() {
+      size_t start_chunk = thread_idx * chunk_per_thread;
+      size_t end_chunk = std::min((thread_idx + 1) * chunk_per_thread, num_chunks);
+      
+      if (start_chunk >= num_chunks) {
+        LOG(INFO) << "Thread " << thread_idx << " early exits (no chunks)";
+        return 0;
+      }
+
+      size_t global_offset = start_chunk * chunk_size;
+      
+      // Find starting partition
+      size_t partition_id = 0;
+      size_t partition_offset = global_offset;
+      bool found_partition = false;
+      for (size_t i = 0; i < cumulative_partition_sizes.size(); ++i) {
+        if (global_offset < cumulative_partition_sizes[i]) {
+          partition_id = i;
+          if (i > 0) {
+            partition_offset = global_offset - cumulative_partition_sizes[i - 1];
+          }
+          found_partition = true;
+          break;
+        }
+      }
+      
+      // Safety check: ensure we found a valid partition
+      if (!found_partition || partition_id >= partition_sizes_.size()) {
+        LOG(ERROR) << "Thread " << thread_idx << " invalid partition " << partition_id 
+                   << " for start_chunk " << start_chunk << " at global_offset " 
+                   << global_offset / MB << "MB";
+        return -1;
+      }
+
+      LOG(INFO) << "Thread " << thread_idx << " starting from chunk " << start_chunk
+                << " partition " << partition_id << " offset " << partition_offset / MB << "MB";
+
+      for (size_t chunk_idx = start_chunk; chunk_idx < end_chunk; ++chunk_idx) {
+        size_t size = std::min(chunk_size, model_size_ - chunk_idx * chunk_size);
+        
+        if (host_buffers[chunk_idx] == nullptr) {
+          LOG(ERROR) << "Host buffer not allocated";
+          return -1;
+        }
+
+        if (state_ == MemoryState::CANCELLED) {
+          LOG(INFO) << "Loading from disk for model " << model_path_ << " is cancelled";
+          return 0;
+        }
+
+        // Handle partition boundaries with improved logic
+        size_t remaining_size = size;
+        size_t buffer_offset = 0;
+        
+        while (remaining_size > 0) {
+          // Find current partition
+          size_t current_partition_id = partition_id;
+          size_t current_partition_offset = partition_offset;
+          
+          // Bounds check: ensure partition_id is valid
+          if (current_partition_id >= partition_sizes_.size()) {
+            LOG(ERROR) << "Thread " << thread_idx << " invalid partition_id " << current_partition_id 
+                       << " (max: " << (partition_sizes_.size() - 1) << ") for chunk " << chunk_idx 
+                       << " at global_offset " << global_offset / MB << "MB";
+            return -1;
+          }
+          
+          // Check if we need to move to next partition
+          size_t remaining_in_partition = partition_sizes_[current_partition_id] - current_partition_offset;
+          size_t read_size = std::min(remaining_size, remaining_in_partition);
+          
+          int fd = file_descriptors[current_partition_id];
+          void* read_buffer = static_cast<char*>(host_buffers[chunk_idx]) + buffer_offset;
+          
+          ssize_t ret = pread(fd, read_buffer, read_size, current_partition_offset);
+          
+          if (ret < 0) {
+            auto tensor_path = partition_paths_[current_partition_id];
+            LOG(ERROR) << "pread() failed for file: " << tensor_path
+                       << ", error: " << strerror(errno);
+            return -1;
+          } else if ((size_t)ret != read_size) {
+            auto tensor_path = partition_paths_[current_partition_id];
+            LOG(ERROR) << "Failed to read file: " << tensor_path
+                       << " read: " << ret << " expected: " << read_size;
+            return -1;
+          }
+
+          remaining_size -= read_size;
+          buffer_offset += read_size;
+          
+          // Update offsets for next iteration
+          partition_offset += read_size;
+          if (partition_offset >= partition_sizes_[current_partition_id] && 
+              current_partition_id + 1 < partition_sizes_.size()) {
+            partition_id = current_partition_id + 1;
+            partition_offset = 0;
+          }
+        }
+
+        host_ptr_vector_->enqueue(chunk_idx, Batch{chunk_idx, size});
+      }
+
+      return 0;
+    }));
+  }
+
+  bool error = false;
+  for (auto &future : futures) {
+    int ret = future.get();
+    if (ret != 0) {
+      LOG(ERROR) << "Error reading from disk, ret " << ret;
+      error = true;
+    }
+  }
+#endif
 
   // close file
   for (int fd : file_descriptors) {
@@ -379,6 +591,7 @@ int Model::ToGpu(
             if (gpu_replica->state_ == MemoryState::CANCELLED) {
               LOG(INFO) << "Loading from mem for model " << model_path_
                         << " is cancelled, chunk " << chunk_id;
+              // Clean up streams before returning (will be created below)
               return 0;
             }
 
@@ -387,92 +600,46 @@ int Model::ToGpu(
           }
 
           LOG(INFO) << "Starting " << transfers.size()
-                    << " transfers to device " << device_id
-                    << " using CUDA graphs";
+                    << " async transfers across 4 streams for device " << device_id;
 
-          // OPTIMIZATION: Cache CUDA graphs to avoid recreation overhead
-          std::string cache_key = model_path_ + ":" +
-                                  std::to_string(transfers.size()) + ":" +
-                                  std::to_string(loaded_size);
-
-          cudaStream_t stream;
-          CUDA_CHECK(cudaStreamCreate(&stream), "cudaStreamCreate Error");
-
-          cudaGraphExec_t graph_exec;
-          bool cached = false;
-
-          // Check cache for existing graph
-          {
-            std::lock_guard<std::mutex> cache_lock(graph_cache_mutex_);
-            auto it = cuda_graph_cache_.find(cache_key);
-            if (it != cuda_graph_cache_.end() &&
-                it->second.num_transfers == transfers.size() &&
-                it->second.total_size == loaded_size) {
-              // FAST PATH: Reuse cached graph
-              graph_exec = it->second.graph_exec;
-              cached = true;
-              LOG(INFO) << "Reusing cached CUDA graph for " << transfers.size() << " transfers";
-            }
+          // OPTIMIZATION: Multi-stream async transfers for 2-3x speedup
+          const int num_streams = 4;  // 4 concurrent streams for overlap
+          std::vector<cudaStream_t> streams(num_streams);
+          for (int i = 0; i < num_streams; ++i) {
+            CUDA_CHECK(cudaStreamCreate(&streams[i]),
+                      "cudaStreamCreate Error");
           }
 
-          if (!cached) {
-            // SLOW PATH: Capture new graph and cache it
-            LOG(INFO) << "Capturing new CUDA graph for " << transfers.size() << " transfers...";
+          // Issue all async transfers across multiple streams
+          for (size_t i = 0; i < transfers.size(); ++i) {
+            int stream_idx = i % num_streams;  // Round-robin across streams
+            auto& op = transfers[i];
 
-            cudaGraph_t graph;
-            CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal),
-                      "cudaStreamBeginCapture Error");
-
-            // Issue all transfers on single stream (will be captured in graph)
-            for (size_t i = 0; i < transfers.size(); ++i) {
-              auto& op = transfers[i];
-
-              CUDA_CHECK(
-                  cudaMemcpyAsync(
-                      (void *)((char *)device_ptr_list[op.handle_idx] + op.gpu_offset),
-                      (void *)(host_buffers[op.chunk_id] + op.chunk_offset),
-                      op.size,
-                      cudaMemcpyHostToDevice,
-                      stream),
-                  "cudaMemcpyAsync Error");
-            }
-
-            // End graph capture
-            CUDA_CHECK(cudaStreamEndCapture(stream, &graph),
-                      "cudaStreamEndCapture Error");
-
-            // Instantiate the graph
-            CUDA_CHECK(cudaGraphInstantiate(&graph_exec, graph, NULL, NULL, 0),
-                      "cudaGraphInstantiate Error");
-
-            cudaGraphDestroy(graph);  // Can destroy graph after instantiation
-
-            // Add to cache
-            {
-              std::lock_guard<std::mutex> cache_lock(graph_cache_mutex_);
-              cuda_graph_cache_[cache_key] = {graph_exec, transfers.size(), loaded_size};
-              LOG(INFO) << "Cached CUDA graph with key: " << cache_key;
-            }
+            CUDA_CHECK(
+                cudaMemcpyAsync(
+                    (void *)((char *)device_ptr_list[op.handle_idx] + op.gpu_offset),
+                    (void *)(host_buffers[op.chunk_id] + op.chunk_offset),
+                    op.size,
+                    cudaMemcpyHostToDevice,
+                    streams[stream_idx]),
+                "cudaMemcpyAsync Error");
           }
 
-          LOG(INFO) << "Launching CUDA graph with " << transfers.size() << " transfers...";
+          // CRITICAL: Synchronize ALL streams before proceeding
+          LOG(INFO) << "Synchronizing " << num_streams << " CUDA streams...";
+          for (int i = 0; i < num_streams; ++i) {
+            CUDA_CHECK(cudaStreamSynchronize(streams[i]),
+                      "cudaStreamSynchronize Error");
+          }
 
-          // Launch the graph (this replays all captured operations)
-          CUDA_CHECK(cudaGraphLaunch(graph_exec, stream),
-                    "cudaGraphLaunch Error");
-
-          // CRITICAL: Synchronize stream to ensure all transfers complete
-          CUDA_CHECK(cudaStreamSynchronize(stream),
-                    "cudaStreamSynchronize Error");
-
-          LOG(INFO) << "CUDA graph " << (cached ? "replay" : "execution") << " completed successfully";
-
-          // Clean up stream (but NOT graph_exec if cached)
-          cudaStreamDestroy(stream);
+          // Clean up streams
+          for (auto& stream : streams) {
+            cudaStreamDestroy(stream);
+          }
 
           LOG(INFO) << "Finished loading " << loaded_size
                     << " bytes to device " << device_id
-                    << " using CUDA graphs";
+                    << " using multi-stream transfers";
 
           return 0;
         }));
@@ -571,7 +738,7 @@ int Model::FreeGpu(const std::string &replica_uuid) {
                << " is not registered";
     return -1;
   }
-
+  
   auto &gpu_replica = gpu_replicas_.at(replica_uuid);
   if (gpu_replica->state_ == MemoryState::UNINITIALIZED) {
     LOG(WARNING) << "Model " << model_path_ << " replica " << replica_uuid

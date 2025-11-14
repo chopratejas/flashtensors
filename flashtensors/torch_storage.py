@@ -222,9 +222,12 @@ def load_dict_non_blocking(
 
     # CRITICAL: Wait for storage server to finish writing to GPU before reading
     logger.debug("⏳ Confirming GPU loading complete before reading memory...")
-    success = storage.confirm_model_loaded(model_path, replica_uuid)
+    # Increase timeout for large models that take longer to load
+    success = storage.confirm_model_loaded(model_path, replica_uuid, timeout=300)  # 5 minutes for large models
     if not success:
-        logger.error(f"❌ Failed to confirm model {model_path} loaded")
+        logger.error(f"❌ Failed to confirm model {model_path} loaded after retries")
+        logger.error("   This usually means the storage server crashed during model loading")
+        logger.error("   Check /tmp/flashtensors_storage_server_error.log for details")
         raise ValueError(f"Failed to confirm model {model_path} loaded")
 
     logger.debug("✅ GPU loading confirmed, now safe to restore tensors")

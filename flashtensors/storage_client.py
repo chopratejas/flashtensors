@@ -109,24 +109,61 @@ class StorageClient:
             replica_uuid=replica_uuid,
             target_device_type=storage_pb2.DeviceType.DEVICE_TYPE_GPU,
         )
-        try:
-            _ = self.stub.ConfirmModel(request, timeout=timeout)
-            logger.info("Model loaded")
-            return True
-        except grpc.RpcError as e:
-            logger.error(f"Error: {e}")
-            if e.code() == grpc.StatusCode.CANCELLED:
-                logger.error("Model not loaded - cancelled")
-            elif e.code() == grpc.StatusCode.UNAVAILABLE:
-                logger.error("Model not loaded - service unavailable (possible crash)")
-            elif e.code() == grpc.StatusCode.INTERNAL:
-                logger.error("Model not loaded - internal error")
-            else:
-                logger.error(f"Model not loaded - status: {e.code()}")
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error in confirm_model_loaded: {e}")
-            return False
+        # Retry logic for server crashes/restarts
+        max_retries = 5  # More retries for server restarts
+        retry_delay = 10  # Longer delay to allow server to restart
+        for attempt in range(max_retries):
+            try:
+                _ = self.stub.ConfirmModel(request, timeout=timeout)
+                logger.info("Model loaded")
+                return True
+            except grpc.RpcError as e:
+                logger.error(f"Error (attempt {attempt + 1}/{max_retries}): {e}")
+                if e.code() == grpc.StatusCode.CANCELLED:
+                    logger.error("Model not loaded - cancelled")
+                    return False
+                elif e.code() == grpc.StatusCode.UNAVAILABLE:
+                    logger.error("Model not loaded - service unavailable (possible crash)")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying in {retry_delay} seconds (waiting for server to restart)...")
+                        time.sleep(retry_delay)
+                        # Wait for server to be available again
+                        from .config import is_server_running
+                        wait_count = 0
+                        max_wait = 30  # Wait up to 30 seconds for server to restart
+                        while wait_count < max_wait and not is_server_running():
+                            time.sleep(2)
+                            wait_count += 2
+                            if wait_count % 10 == 0:
+                                logger.info(f"   Still waiting for server to restart... ({wait_count}s)")
+                        
+                        if not is_server_running():
+                            logger.warning("   Server did not restart in time, but continuing anyway...")
+                        
+                        # Reconnect to server
+                        try:
+                            self.channel.close()
+                            self.channel = grpc.insecure_channel(self.server_address)
+                            self.stub = storage_pb2_grpc.StorageStub(self.channel)
+                            logger.info("   Reconnected to server")
+                        except Exception as reconnect_error:
+                            logger.warning(f"Failed to reconnect: {reconnect_error}")
+                        continue
+                    return False
+                elif e.code() == grpc.StatusCode.INTERNAL:
+                    logger.error("Model not loaded - internal error")
+                    return False
+                else:
+                    logger.error(f"Model not loaded - status: {e.code()}")
+                    return False
+            except Exception as e:
+                logger.error(f"Unexpected error in confirm_model_loaded: {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                return False
+        return False
 
     def register_model(self, model_path) -> StorageResponse:
         logger.info(f"register_model: {model_path}")

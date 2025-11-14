@@ -154,10 +154,11 @@ class TransformersBackend(BaseBackend):
                 hf_model_class=hf_model_class,
             )
             
-            tokenizer = AutoTokenizer.from_pretrained(full_model_path)
+            # Note: tokenizer is not returned - users should load it separately if needed
+            # tokenizer = AutoTokenizer.from_pretrained(full_model_path)
             
             logger.info(f"✅ Transformers model {model_id} loaded with fast loading")
-            return model, tokenizer
+            return model
             
         except Exception as e:
             logger.error(f"❌ Failed to fast load transformers model {model_id}: {e}")

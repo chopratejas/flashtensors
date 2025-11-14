@@ -187,10 +187,21 @@ set(CHECKPOINT_STORE_CXX_SOURCES
   "csrc/store/pinned_memory.cpp"
 )
 
+# Check for liburing (optional - fallback to regular I/O if not available)
+find_library(URING_LIB uring)
+if(URING_LIB)
+  add_definitions(-DHAVE_LIBURING)
+  message(STATUS "Found liburing: ${URING_LIB}")
+else()
+  message(WARNING "liburing not found - will use regular I/O (slower but functional)")
+endif()
+
 set(CHECKPOINT_STORE_LIBRARIES
   Threads::Threads
-  glog::glog
-  uring)
+  glog::glog)
+if(URING_LIB)
+  list(APPEND CHECKPOINT_STORE_LIBRARIES ${URING_LIB})
+endif()
 
 define_gpu_extension_target(
   _checkpoint_store

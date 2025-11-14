@@ -43,9 +43,28 @@ endfunction()
 # Run `EXPR` in python after importing `PKG`. Use the result of this to extend
 # `CMAKE_PREFIX_PATH` so the torch cmake configuration can be imported.
 macro (append_cmake_prefix_path PKG EXPR)
-  run_python(_PREFIX_PATH
-    "import ${PKG}; print(${EXPR})" "Failed to locate ${PKG} path")
-  list(APPEND CMAKE_PREFIX_PATH ${_PREFIX_PATH})
+  # Special handling for torch to avoid NCCL import issues
+  if("${PKG}" STREQUAL "torch")
+    # Try to get torch path without importing (to avoid NCCL symbol issues)
+    run_python(_PREFIX_PATH
+      "import sys; import os; site_packages = [p for p in sys.path if 'site-packages' in p or 'dist-packages' in p][0] if any('site-packages' in p or 'dist-packages' in p for p in sys.path) else sys.path[-1]; torch_path = os.path.join(site_packages, 'torch'); cmake_path = os.path.join(torch_path, 'share', 'cmake', 'Torch'); print(cmake_path if os.path.exists(cmake_path) else torch_path)"
+      "Failed to locate ${PKG} path")
+    if(_PREFIX_PATH)
+      list(APPEND CMAKE_PREFIX_PATH ${_PREFIX_PATH})
+    else()
+      # Fallback: try importing (may fail with NCCL issues but worth trying)
+      run_python(_PREFIX_PATH_FALLBACK
+        "import ${PKG}; print(${EXPR})" "Failed to locate ${PKG} path (fallback)")
+      if(_PREFIX_PATH_FALLBACK)
+        list(APPEND CMAKE_PREFIX_PATH ${_PREFIX_PATH_FALLBACK})
+      endif()
+    endif()
+  else()
+    # For other packages, use the original method
+    run_python(_PREFIX_PATH
+      "import ${PKG}; print(${EXPR})" "Failed to locate ${PKG} path")
+    list(APPEND CMAKE_PREFIX_PATH ${_PREFIX_PATH})
+  endif()
 endmacro()
 
 #
@@ -103,10 +122,36 @@ function (get_torch_gpu_compiler_flags OUT_GPU_FLAGS GPU_LANG)
   if (${GPU_LANG} STREQUAL "CUDA")
     #
     # Get common NVCC flags from torch.
+    # Try importing torch, but fallback to common flags if NCCL issues prevent import
     #
-    run_python(GPU_FLAGS
-      "from torch.utils.cpp_extension import COMMON_NVCC_FLAGS; print(';'.join(COMMON_NVCC_FLAGS))"
-      "Failed to determine torch nvcc compiler flags")
+    execute_process(
+      COMMAND ${PYTHON_EXECUTABLE} -c "from torch.utils.cpp_extension import COMMON_NVCC_FLAGS; print(';'.join(COMMON_NVCC_FLAGS))"
+      OUTPUT_VARIABLE PYTHON_OUT
+      ERROR_VARIABLE PYTHON_STDERR
+      RESULT_VARIABLE PYTHON_ERROR_CODE
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    
+    # If the above failed (due to NCCL), use common NVCC flags
+    if(NOT PYTHON_ERROR_CODE EQUAL 0 OR "${PYTHON_STDERR}" MATCHES "ncclGroupSimulateEnd|undefined symbol")
+      message(WARNING "Could not get NVCC flags from torch (NCCL issue detected), using common defaults")
+      set(GPU_FLAGS
+        "-gencode;arch=compute_70,code=sm_70"
+        "-gencode;arch=compute_75,code=sm_75"
+        "-gencode;arch=compute_80,code=sm_80"
+        "-gencode;arch=compute_86,code=sm_86"
+        "-gencode;arch=compute_90,code=sm_90"
+        "-D__CUDA_NO_HALF_OPERATORS__"
+        "-D__CUDA_NO_HALF_CONVERSIONS__"
+        "-D__CUDA_NO_BFLOAT16_CONVERSIONS__"
+        "-D__CUDA_NO_HALF2_OPERATORS__"
+        "--expt-relaxed-constexpr"
+        "--expt-extended-lambda"
+        "--use_fast_math"
+        "-Xcompiler;-fPIC"
+      )
+    else()
+      set(GPU_FLAGS ${PYTHON_OUT})
+    endif()
 
     if (CUDA_VERSION VERSION_GREATER_EQUAL 11.8)
       list(APPEND GPU_FLAGS "-DENABLE_FP8")
